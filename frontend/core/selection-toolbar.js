@@ -5,19 +5,21 @@
  *
  * This replaces the sidebar formatting panel with a contextual, selection-triggered
  * toolbar that appears near the selected text. The document stays the hero.
+ *
+ * Keybindings are defined centrally in keybindings.js and dispatched via KeybindingManager.
  */
 
-// Platform detection for keyboard shortcut display
-const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
-const modKey = isMac ? '⌘' : 'Ctrl';
+import { KeybindingManager } from './keybinding-manager.js';
+import { KEYBINDINGS, MOD_KEY, getBindingDisplayString } from './keybindings.js';
 
 // Formatting actions - minimal set for inline formatting
+// Shortcuts now reference keybindings.js IDs
 const INLINE_ACTIONS = [
-    { id: 'bold', icon: 'B', title: 'Bold', shortcut: 'B', markdown: ['**', '**'], className: 'bold' },
-    { id: 'italic', icon: 'I', title: 'Italic', shortcut: 'I', markdown: ['*', '*'], className: 'italic' },
-    { id: 'code', icon: '`', title: 'Code', shortcut: 'E', markdown: ['`', '`'], className: 'code' },
-    { id: 'strike', icon: 'S', title: 'Strikethrough', shortcut: 'Shift+S', markdown: ['~~', '~~'], className: 'strike' },
-    { id: 'link', icon: '🔗', title: 'Link', shortcut: 'K', action: 'link', className: 'link' },
+    { id: 'bold', icon: 'B', title: 'Bold', bindingId: 'format:bold', markdown: ['**', '**'], className: 'bold' },
+    { id: 'italic', icon: 'I', title: 'Italic', bindingId: 'format:italic', markdown: ['*', '*'], className: 'italic' },
+    { id: 'code', icon: '`', title: 'Code', bindingId: 'format:code', markdown: ['`', '`'], className: 'code' },
+    { id: 'strike', icon: 'S', title: 'Strikethrough', bindingId: 'format:strikethrough', markdown: ['~~', '~~'], className: 'strike' },
+    { id: 'link', icon: '🔗', title: 'Link', bindingId: 'format:link', action: 'link', className: 'link' },
 ];
 
 // State
@@ -37,8 +39,8 @@ let linkMode = false;
 export function initSelectionToolbar(container, editorInstance) {
     editor = editorInstance;
 
-    // Setup keyboard shortcuts (work even when toolbar not visible)
-    setupKeyboardShortcuts();
+    // Register keybinding handlers with centralized manager
+    registerKeybindingHandlers();
 
     // Create toolbar element
     toolbarEl = document.createElement('div');
@@ -55,7 +57,8 @@ export function initSelectionToolbar(container, editorInstance) {
         const btn = document.createElement('button');
         btn.className = `selection-toolbar-btn ${action.className || ''}`;
         btn.dataset.action = action.id;
-        btn.title = `${action.title} (${modKey}+${action.shortcut})`;
+        const shortcutDisplay = action.bindingId ? getBindingDisplayString(action.bindingId) : '';
+        btn.title = shortcutDisplay ? `${action.title} (${shortcutDisplay})` : action.title;
         btn.setAttribute('aria-label', action.title);
         btn.innerHTML = `<span class="selection-toolbar-icon">${action.icon}</span>`;
 
@@ -405,6 +408,9 @@ export function isToolbarVisible() {
  * Destroy the toolbar
  */
 export function destroySelectionToolbar() {
+    // Unregister keybinding handlers
+    unregisterKeybindingHandlers();
+
     if (toolbarEl && toolbarEl.parentNode) {
         toolbarEl.parentNode.removeChild(toolbarEl);
     }
@@ -424,79 +430,72 @@ export function setEditor(editorInstance) {
 }
 
 /**
- * Setup keyboard shortcuts for inline formatting
+ * Register keybinding handlers with the centralized KeybindingManager
  * These work even when the toolbar isn't visible
  */
-function setupKeyboardShortcuts() {
-    document.addEventListener('keydown', (e) => {
+function registerKeybindingHandlers() {
+    // Register handlers for each formatting action
+    KeybindingManager.handle('format:bold', () => {
+        if (!editor) return;
+        if (editor.wrapSelection) {
+            editor.wrapSelection('**', '**');
+        }
+    });
+
+    KeybindingManager.handle('format:italic', () => {
+        if (!editor) return;
+        if (editor.wrapSelection) {
+            editor.wrapSelection('*', '*');
+        }
+    });
+
+    KeybindingManager.handle('format:code', () => {
+        if (!editor) return;
+        if (editor.wrapSelection) {
+            editor.wrapSelection('`', '`');
+        }
+    });
+
+    KeybindingManager.handle('format:strikethrough', () => {
+        if (!editor) return;
+        if (editor.wrapSelection) {
+            editor.wrapSelection('~~', '~~');
+        }
+    });
+
+    KeybindingManager.handle('format:link', () => {
         if (!editor) return;
 
-        const isMod = isMac ? e.metaKey : e.ctrlKey;
-        if (!isMod) return;
-
-        // Check if we're in the editor
         const editorEl = editor.editorEl;
         if (!editorEl) return;
 
-        // Only apply shortcuts when focus is in editor or selection spans editor
-        const activeInEditor = document.activeElement === editorEl ||
-            (editorEl.contains(document.activeElement));
-        const selectionInEditor = (() => {
-            const sel = window.getSelection();
-            if (!sel.rangeCount) return false;
+        // Show toolbar with link mode if there's a selection
+        const sel = window.getSelection();
+        if (!sel.isCollapsed && sel.rangeCount > 0) {
             const range = sel.getRangeAt(0);
-            return editorEl.contains(range.startContainer) || editorEl.contains(range.endContainer);
-        })();
-
-        if (!activeInEditor && !selectionInEditor) return;
-
-        // Match shortcuts
-        for (const action of INLINE_ACTIONS) {
-            if (action.shortcut && matchShortcut(e, action.shortcut)) {
-                e.preventDefault();
-
-                // For inline formatting that needs selection
-                if (action.markdown) {
-                    const [before, after] = action.markdown;
-                    if (editor.wrapSelection) {
-                        editor.wrapSelection(before, after);
-                    }
-                }
-                // For link action
-                else if (action.action === 'link') {
-                    // Show toolbar with link mode if there's a selection
-                    const sel = window.getSelection();
-                    if (!sel.isCollapsed && sel.rangeCount > 0) {
-                        const range = sel.getRangeAt(0);
-                        currentSelection = {
-                            range: range.cloneRange(),
-                            text: range.toString().trim()
-                        };
-                        if (currentSelection.text) {
-                            // Show toolbar and enter link mode
-                            const container = editorEl.closest('.editor-container') || editorEl.parentElement;
-                            show(container, range);
-                            enterLinkMode();
-                        }
-                    }
-                }
-                return;
+            currentSelection = {
+                range: range.cloneRange(),
+                text: range.toString().trim()
+            };
+            if (currentSelection.text) {
+                // Show toolbar and enter link mode
+                const container = editorEl.closest('.editor-container') || editorEl.parentElement;
+                show(container, range);
+                enterLinkMode();
             }
         }
     });
 }
 
 /**
- * Check if keyboard event matches shortcut string
+ * Unregister keybinding handlers
  */
-function matchShortcut(e, shortcut) {
-    const parts = shortcut.split('+');
-    const key = parts[parts.length - 1].toUpperCase();
-    const needsShift = parts.includes('Shift');
-
-    if (needsShift !== e.shiftKey) return false;
-
-    return e.key.toUpperCase() === key;
+function unregisterKeybindingHandlers() {
+    KeybindingManager.unhandle('format:bold');
+    KeybindingManager.unhandle('format:italic');
+    KeybindingManager.unhandle('format:code');
+    KeybindingManager.unhandle('format:strikethrough');
+    KeybindingManager.unhandle('format:link');
 }
 
 export default {

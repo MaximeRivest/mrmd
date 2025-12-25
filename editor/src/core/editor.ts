@@ -144,6 +144,10 @@ export class MrmdEditor {
       );
     }
 
+    // Streaming overlay for AI/execution output - always included
+    // This allows AI actions to use the overlay even without full collaboration
+    extensions.push(streamingOverlayExtension());
+
     // Collaboration
     if (this.config.collab) {
       const { adapter, filePath, userId, startVersion } = this.config.collab;
@@ -169,9 +173,6 @@ export class MrmdEditor {
       if (this.lockManager) {
         extensions.push(lockExtension({ manager: this.lockManager }));
       }
-
-      // Add streaming overlay for AI/execution output
-      extensions.push(streamingOverlayExtension());
     }
 
     // Custom extensions

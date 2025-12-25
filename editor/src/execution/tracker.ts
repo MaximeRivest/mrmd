@@ -69,6 +69,11 @@ export class ExecutionTracker {
       // Schedule a final check after DOM updates settle (cleaner than multiple timeouts)
       requestAnimationFrame(() => this.ensureOutputNewline(execId));
       this.running.delete(execId);
+
+      // Emit event for variables panel refresh
+      document.dispatchEvent(new CustomEvent('mrmd:execution-complete', {
+        detail: { execId, language },
+      }));
     }
 
     return execId;

@@ -61,6 +61,11 @@ const bootConfig = {
         '/core/process-sidebar.js',
         '/core/compact-mode.js',
         '/core/selection-toolbar.js',
+        '/core/keybinding-manager.js',
+        '/core/editor-keybindings.js',
+        '/core/variables-panel.js',
+        '/core/developer-status.js',
+        '/core/keybindings.js',
     ],
     banner: {
         js: '/* Atelier boot - clean service architecture */\n'

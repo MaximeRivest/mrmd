@@ -1,14 +1,16 @@
 /**
- * Atelier Codes - Developer Mode Application
+ * Atelier - Unified Application Entry Point
  *
- * This is the main entry point for Developer Mode (atelier.codes).
- * It uses @mrmd/editor directly - no shims, no adapters.
+ * Single app with two interface modes:
+ * - Compact (Study): Minimal chrome, writer-focused, tool rail for power features
+ * - Developer (Codes): Full IDE with sidebar, file tabs, terminal
  *
  * Architecture:
  * - @mrmd/editor provides the editing surface with built-in execution
  * - Services handle API calls (DocumentService, CollaborationService)
  * - AppState manages centralized application state
  * - UI modules (from /core/*.js) provide the chrome
+ * - InterfaceManager handles compact/developer mode switching
  */
 
 import type { Services } from '../shared/types';
@@ -20,7 +22,6 @@ import { createImageUrlResolver } from '../shared/imageUrl';
 import {
     createEditor,
     IPythonExecutor,
-    createMinimalIPythonClient,
     type MrmdEditor,
     type CursorInfo,
     type CompletionResult,
@@ -54,9 +55,23 @@ import { createNotificationManager } from '/core/notifications.js';
 // @ts-ignore
 import { createProcessSidebar } from '/core/process-sidebar.js';
 // @ts-ignore
-import { toggleMode } from '/core/compact-mode.js';
+import { toggleMode, HomeScreen } from '/core/compact-mode.js';
 // @ts-ignore
 import { initSelectionToolbar } from '/core/selection-toolbar.js';
+// @ts-ignore
+import * as VariablesPanel from '/core/variables-panel.js';
+
+// Interface mode management
+import { InterfaceManager, createInterfaceManager } from './InterfaceManager';
+// @ts-ignore
+import { initEditorKeybindings } from '/core/editor-keybindings.js';
+
+// AI Action Handler - bridges AI Palette → Editor Streaming Layer
+import {
+    createAIActionHandler,
+    type AIActionHandler,
+    type AIActionContext,
+} from '../../services/ai-action-handler';
 
 // ============================================================================
 // Types
@@ -96,6 +111,7 @@ interface AiPaletteAPI {
 let services: Services;
 let editor: MrmdEditor;
 let ipython: IPythonClient;
+let ipythonExecutor: IPythonExecutor;  // Executor for code blocks - needs session sync
 let aiClient: AiClient;
 let fileTabs: FileTabs;
 let fileBrowser: FileBrowserAPI;
@@ -103,6 +119,8 @@ let terminalTabs: TerminalTabsAPI;
 let notificationManager: NotificationManager | null = null;
 let aiPalette: AiPaletteAPI;
 let historyPanel: HistoryPanel | null = null;
+let interfaceManager: InterfaceManager | null = null;
+let aiActionHandler: AIActionHandler | null = null;
 
 // DOM Elements
 let container: HTMLElement;
@@ -125,13 +143,30 @@ let lastSaveTime = Date.now();
 let fileCheckInterval: ReturnType<typeof setInterval> | null = null;
 let noCollab = false;
 
+// Race condition protection for file loading
+let currentFileLoadId = 0;
+
+// ============================================================================
+// Types - Mount Options
+// ============================================================================
+
+export interface MountOptions {
+    /** Default interface mode: 'compact' for Study, 'developer' for Codes */
+    defaultMode?: 'compact' | 'developer';
+}
+
 // ============================================================================
 // Mount Function - Entry Point
 // ============================================================================
 
-export async function mount(svc: Services): Promise<void> {
-    console.log('[Codes] Mounting Developer Mode...');
+export async function mount(svc: Services, options: MountOptions = {}): Promise<void> {
+    const defaultMode = options.defaultMode ?? 'developer';
+    const modeName = defaultMode === 'compact' ? 'Study' : 'Codes';
+    console.log(`[Atelier] Mounting in ${modeName} mode (${defaultMode})...`);
     services = svc;
+
+    // Set the default interface mode before initializing UI
+    SessionState.setInterfaceMode(defaultMode);
 
     // Check for noCollab mode
     noCollab = new URLSearchParams(window.location.search).has('noCollab');
@@ -145,8 +180,12 @@ export async function mount(svc: Services): Promise<void> {
     // Initialize editor (direct @mrmd/editor usage)
     initEditor();
 
-    // Initialize UI modules
+    // Initialize UI modules (sidebar, tabs, file browser, etc.)
     await initUIModules();
+
+    // Initialize interface mode manager
+    // This handles compact/developer mode switching and creates the compact UI
+    await initInterfaceMode();
 
     // Initialize collaboration
     await initCollaboration();
@@ -157,13 +196,16 @@ export async function mount(svc: Services): Promise<void> {
     // Set up keyboard shortcuts
     setupKeyboardShortcuts();
 
+    // Initialize variables panel
+    initVariablesPanel();
+
     // Start file watching
     initFileWatching();
 
     // Load initial state
     await loadInitialState();
 
-    console.log('[Codes] Developer Mode ready');
+    console.log(`[Atelier] ${modeName} mode ready`);
 }
 
 // ============================================================================
@@ -199,9 +241,9 @@ function initClients(): void {
 }
 
 function initEditor(): void {
-    // Create IPython executor for code execution
-    const ipythonClient = createMinimalIPythonClient('');
-    const executor = new IPythonExecutor({ client: ipythonClient });
+    // Create IPython executor using the SAME client as completion/variables
+    // This ensures session state is always in sync
+    ipythonExecutor = new IPythonExecutor({ client: ipython });
 
     // Image URL resolver
     const resolveImageUrl = createImageUrlResolver(() => documentBasePath);
@@ -210,7 +252,7 @@ function initEditor(): void {
     editor = createEditor({
         parent: container,
         doc: '',
-        executor,
+        executor: ipythonExecutor,
         theme: 'zen',
         resolveImageUrl,
 
@@ -282,6 +324,29 @@ function initEditor(): void {
 
     // Focus editor
     editor.focus();
+
+    // Initialize AI Action Handler - bridges AI palette to editor streaming layer
+    // AI-human interaction is inherently collaborative - locks ensure clean edits
+    aiActionHandler = createAIActionHandler({
+        getView: () => editor?.view ?? null,
+        getLockManager: () => editor?.lockManager ?? null,
+        getUser: () => ({
+            userId: 'local-user',
+            userName: 'You',
+            userColor: '#3b82f6',
+        }),
+        onSuccess: (actionId, content) => {
+            console.log(`[AI] Successfully applied '${actionId}': ${content.length} chars`);
+        },
+        onError: (actionId, error) => {
+            console.error(`[AI] Failed to apply '${actionId}':`, error);
+            notificationManager?.addLocalNotification(
+                'AI Action Failed',
+                error.message,
+                'error'
+            );
+        },
+    });
 }
 
 // ============================================================================
@@ -355,6 +420,9 @@ async function initUIModules(): Promise<void> {
                 browserRoot = path;
                 localStorage.setItem('mrmd_browser_root', browserRoot);
             },
+            onOpenProject: (path: string) => {
+                SessionState.openProject(path);
+            },
         });
     }
 
@@ -372,6 +440,8 @@ async function initUIModules(): Promise<void> {
         onRunningChange: (count: number) => {
             updateRunningBadge(count);
         },
+        onActionStart: handleAiActionStart,
+        onChunk: handleAiChunk,
         onAction: handleAiAction,
         onError: (err: Error, actionId: string) => {
             console.error('[AI] Error:', actionId, err);
@@ -411,12 +481,12 @@ async function initUIModules(): Promise<void> {
     }
 
     // Recent Projects Panel
-    const projectsPanel = document.getElementById('projects-panel');
-    if (projectsPanel) {
-        createRecentProjectsPanel({
-            container: projectsPanel,
-            onProjectSelect: (path: string) => openProject(path),
+    const projectsPanelContainer = document.getElementById('projects-panel');
+    if (projectsPanelContainer) {
+        const projectsPanelEl = createRecentProjectsPanel({
+            onProjectOpen: (path: string) => openProject(path),
         });
+        projectsPanelContainer.appendChild(projectsPanelEl);
     }
 
     // Sidebar tabs
@@ -428,9 +498,48 @@ async function initUIModules(): Promise<void> {
     // Theme picker
     initThemePicker();
 
-    // Mode toggle (compact mode)
+    // Mode toggle (compact mode) - button handler only
+    // Actual mode management is handled by InterfaceManager
     initModeToggle();
 }
+
+// ============================================================================
+// Interface Mode Management
+// ============================================================================
+
+/**
+ * Initialize the interface mode manager.
+ *
+ * The Codes app supports two interface modes:
+ * - Compact: Document-first with floating toolbar (like Study mode)
+ * - Developer: Full IDE with sidebar, tabs, terminal
+ *
+ * The InterfaceManager owns this lifecycle and coordinates all mode-related UI.
+ */
+async function initInterfaceMode(): Promise<void> {
+    const mainContainer = document.querySelector('.container') as HTMLElement;
+    const editorPane = document.querySelector('.editor-pane') as HTMLElement;
+
+    if (!mainContainer || !editorPane) {
+        console.error('[Codes] Cannot initialize interface mode: missing container elements');
+        return;
+    }
+
+    interfaceManager = await createInterfaceManager({
+        container: mainContainer,
+        editorPane: editorPane,
+        editor: editor,
+        getEditor: () => editor,
+        fileBrowser: fileBrowser,
+    });
+
+    // Log initial mode for debugging
+    console.log(`[Codes] Interface mode: ${interfaceManager.getMode()}`);
+}
+
+// ============================================================================
+// Collaboration
+// ============================================================================
 
 async function initCollaboration(): Promise<void> {
     if (noCollab) {
@@ -490,6 +599,91 @@ function setupEventHandlers(): void {
     SessionState.on('project-opened', handleProjectOpened);
     SessionState.on('project-created', handleProjectCreated);
 
+    // Kernel status indicators
+    SessionState.on('kernel-initializing', ({ message }: { message?: string }) => {
+        execStatusEl.textContent = message || 'initializing...';
+        execStatusEl.classList.add('kernel-switching');
+    });
+
+    SessionState.on('kernel-ready', () => {
+        execStatusEl.textContent = 'ready';
+        execStatusEl.classList.remove('kernel-switching');
+    });
+
+    SessionState.on('kernel-error', ({ error }: { error: string }) => {
+        execStatusEl.textContent = 'kernel error';
+        execStatusEl.classList.remove('kernel-switching');
+        showNotification('Kernel Error', error, 'error');
+    });
+
+    // Home screen event handlers (with error recovery)
+    // Track pending file switch to prevent duplicate handling
+    let pendingFileSwitch: string | null = null;
+
+    SessionState.on('file-switch-requested', async ({ path }: { path: string }) => {
+        console.log('[Codes] File switch requested:', path);
+
+        // Prevent duplicate requests for same file
+        if (pendingFileSwitch === path) {
+            console.log('[Codes] Ignoring duplicate file switch request:', path);
+            return;
+        }
+        pendingFileSwitch = path;
+
+        HomeScreen.hide();
+        try {
+            await openFile(path);
+            editor?.focus();
+        } catch (err) {
+            console.error('[Codes] Failed to open file:', err);
+            showNotification('Error', `Failed to open file: ${err}`, 'error');
+            HomeScreen.show(); // Re-show home on failure
+        } finally {
+            // Clear pending after a short delay to allow rapid different-file clicks
+            setTimeout(() => {
+                if (pendingFileSwitch === path) {
+                    pendingFileSwitch = null;
+                }
+            }, 100);
+        }
+    });
+
+    SessionState.on('new-notebook-requested', async ({ projectPath, initialContent }: { projectPath?: string; initialContent?: string }) => {
+        console.log('[Codes] New notebook requested:', projectPath);
+        HomeScreen.hide();
+        try {
+            await createNewNotebook(projectPath, initialContent);
+        } catch (err) {
+            console.error('[Codes] Failed to create notebook:', err);
+            showNotification('Error', `Failed to create notebook: ${err}`, 'error');
+            HomeScreen.show();
+        }
+    });
+
+    SessionState.on('project-open-requested', async ({ path }: { path: string }) => {
+        console.log('[Codes] Project open requested:', path);
+        HomeScreen.hide();
+        try {
+            await openProject(path);
+        } catch (err) {
+            console.error('[Codes] Failed to open project:', err);
+            showNotification('Error', `Failed to open project: ${err}`, 'error');
+            HomeScreen.show();
+        }
+    });
+
+    SessionState.on('quick-capture-requested', async () => {
+        console.log('[Codes] Quick capture requested');
+        HomeScreen.hide();
+        try {
+            await createNewNotebook();
+        } catch (err) {
+            console.error('[Codes] Failed to create notebook:', err);
+            showNotification('Error', `Failed to create notebook: ${err}`, 'error');
+            HomeScreen.show();
+        }
+    });
+
     window.addEventListener('focus', () => {
         if (!services.collaboration.isConnected) {
             setTimeout(checkFileChanges, 100);
@@ -505,21 +699,36 @@ function setupEventHandlers(): void {
 }
 
 function setupKeyboardShortcuts(): void {
-    document.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-            e.preventDefault();
-            saveFile();
-        }
+    // Initialize editor keybindings (code execution: Ctrl+Enter, Shift+Enter, etc.)
+    // Use a getter function so keybindings always have the current editor reference
+    initEditorKeybindings({ getEditor: () => editor, statusEl: execStatusEl });
+}
 
-        if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
-            e.preventDefault();
-            focusFileBrowser();
-        }
+function initVariablesPanel(): void {
+    const variablesPanelContainer = document.getElementById('variables-panel');
+    if (!variablesPanelContainer) {
+        console.warn('[Codes] Variables panel container not found');
+        return;
+    }
 
-        if ((e.ctrlKey || e.metaKey) && e.key === '\\') {
-            e.preventDefault();
-            toggleMode();
-        }
+    // Clear existing content and mount the new panel
+    variablesPanelContainer.innerHTML = '';
+    const panelEl = VariablesPanel.createVariablesPanel({
+        ipython,
+    });
+    variablesPanelContainer.appendChild(panelEl);
+
+    // Also refresh when kernel becomes ready
+    SessionState.on('kernel-ready', () => {
+        console.log('[Codes] Kernel ready - refreshing variables panel');
+        VariablesPanel.refresh();
+    });
+
+    // Backup: Also listen for execution complete directly
+    // This ensures variables refresh even if the panel's listener isn't working
+    document.addEventListener('mrmd:execution-complete', (event: Event) => {
+        console.log('[Codes] Execution complete event - refreshing variables panel');
+        VariablesPanel.refresh();
     });
 }
 
@@ -528,10 +737,18 @@ function setupKeyboardShortcuts(): void {
 // ============================================================================
 
 async function openFile(path: string, options: { background?: boolean } = {}): Promise<void> {
-    console.log('[Codes] Opening file:', path, options);
+    // Increment load ID to track this specific load request
+    const loadId = ++currentFileLoadId;
+    console.log('[Codes] Opening file:', path, options, `(loadId: ${loadId})`);
 
     try {
         const file = await services.documents.openFile(path);
+
+        // Check if a newer load was started while we were fetching
+        if (loadId !== currentFileLoadId && !options.background) {
+            console.log('[Codes] Skipping stale file load:', path, `(loadId: ${loadId}, current: ${currentFileLoadId})`);
+            return;
+        }
 
         appState.openFile(path, file.content, {
             mtime: file.mtime ?? null,
@@ -542,6 +759,12 @@ async function openFile(path: string, options: { background?: boolean } = {}): P
         fileTabs?.addTab(path, filename, false);
 
         if (!options.background) {
+            // Double-check we're still the current load before updating editor
+            if (loadId !== currentFileLoadId) {
+                console.log('[Codes] Skipping stale editor update:', path);
+                return;
+            }
+
             appState.setCurrentFile(path);
             fileTabs?.setActiveTab(path);
 
@@ -553,13 +776,19 @@ async function openFile(path: string, options: { background?: boolean } = {}): P
 
             if (path.endsWith('.md')) {
                 const session = await SessionState.getNotebookSession(path);
-                ipython.setSession(session);
-                SessionState.setCurrentSessionName(session);
+                // Final check before updating session
+                if (loadId === currentFileLoadId) {
+                    ipython.setSession(session);
+                    SessionState.setCurrentSessionName(session);
+                }
             }
         }
     } catch (err) {
-        console.error('[Codes] Failed to open file:', err);
-        showNotification('Error', `Failed to open file: ${err}`, 'error');
+        // Only show error if this is still the current load
+        if (loadId === currentFileLoadId) {
+            console.error('[Codes] Failed to open file:', err);
+            showNotification('Error', `Failed to open file: ${err}`, 'error');
+        }
     }
 }
 
@@ -634,6 +863,39 @@ async function doAutosave(): Promise<void> {
     }
 }
 
+async function createNewNotebook(projectPath?: string, initialContent?: string): Promise<void> {
+    const currentProject = appState.project;
+    const scratchPath = SessionState.getScratchPath();
+    const basePath = projectPath || currentProject?.path || scratchPath || browserRoot;
+
+    // Generate unique filename
+    const timestamp = Date.now();
+    const filename = `Untitled-${timestamp}.md`;
+    const filePath = `${basePath}/${filename}`;
+
+    // Create initial content
+    const content = initialContent || '# Untitled\n\n';
+
+    console.log('[Codes] Creating new notebook:', filePath);
+
+    try {
+        // Create the file
+        await services.documents.saveFile(filePath, content);
+
+        // Open it
+        await openFile(filePath);
+
+        // Add to recent notebooks
+        SessionState.addRecentNotebook(filePath, 'Untitled');
+
+        // Focus editor at end of content
+        editor?.focus();
+    } catch (err) {
+        console.error('[Codes] Failed to create notebook:', err);
+        showNotification('Error', `Failed to create notebook: ${err}`, 'error');
+    }
+}
+
 // ============================================================================
 // Tab Handlers
 // ============================================================================
@@ -702,7 +964,19 @@ async function openProject(path: string): Promise<void> {
     SessionState.openProject(path);
 }
 
-async function handleProjectOpened(project: { path: string; name: string }): Promise<void> {
+interface ProjectOpenedEvent {
+    path: string;
+    name: string;
+    savedTabs?: {
+        tabs: string[];
+        active: string | null;
+        scrollPositions?: Record<string, { scrollTop: number }>;
+    } | null;
+    openFileAfter?: string | null;
+    skipFileOpen?: boolean;
+}
+
+async function handleProjectOpened(project: ProjectOpenedEvent): Promise<void> {
     console.log('[Codes] Project opened:', project.name);
 
     appState.setProject({
@@ -714,13 +988,17 @@ async function handleProjectOpened(project: { path: string; name: string }): Pro
 
     browserRoot = project.path;
     localStorage.setItem('mrmd_browser_root', browserRoot);
-    fileBrowser?.setRoot?.(project.path);
+    fileBrowser?.setRoot(project.path);
 
+    // Configure IPython client for this project
+    // Since executor uses the same client, everything stays in sync
     ipython.setSession('main');
     ipython.setProjectPath(project.path);
     ipython.setFigureDir(project.path + '/.mrmd/assets');
+
     setDocumentBasePath(project.path);
 
+    // Connect collaboration
     if (!noCollab && !services.collaboration.isConnected) {
         try {
             await services.collaboration.connect({
@@ -730,6 +1008,50 @@ async function handleProjectOpened(project: { path: string; name: string }): Pro
             });
         } catch (err) {
             console.warn('[Collab] Connection failed:', err);
+        }
+    }
+
+    // Skip file opening if requested (file was already opened before project switch)
+    if (project.skipFileOpen) {
+        console.log('[Codes] Skipping file open (already opened)');
+        return;
+    }
+
+    // Determine which file to open (priority: openFileAfter > savedTabs.active)
+    const savedTabs = project.savedTabs;
+    const fileToOpen = project.openFileAfter || savedTabs?.active;
+
+    // FIRST: Open the requested file immediately for fast UX
+    if (fileToOpen) {
+        console.log('[Codes] Opening file after project switch:', fileToOpen);
+        try {
+            await openFile(fileToOpen);
+        } catch (err) {
+            console.warn('[Codes] Failed to open file:', fileToOpen, err);
+        }
+    }
+
+    // THEN: Restore other saved tabs in background (skip the one we already opened)
+    if (savedTabs?.tabs && savedTabs.tabs.length > 0) {
+        const otherTabs = savedTabs.tabs.filter(t => t !== fileToOpen);
+        if (otherTabs.length > 0) {
+            console.log('[Codes] Restoring other tabs in background:', otherTabs);
+
+            // Mark that we're restoring to prevent auto-save during restore
+            SessionState.setRestoringTabs(true);
+
+            try {
+                for (const tabPath of otherTabs) {
+                    try {
+                        await openFile(tabPath, { background: true });
+                    } catch (err) {
+                        // File may no longer exist - skip it
+                        console.warn('[Codes] Failed to restore tab:', tabPath, err);
+                    }
+                }
+            } finally {
+                SessionState.setRestoringTabs(false);
+            }
         }
     }
 }
@@ -901,15 +1223,80 @@ function adjustCursorPosition(oldContent: string, newContent: string, oldCursor:
 function getAiContext(): unknown {
     const selInfo = getSelectionInfo();
     const markdown = getContent();
+
+    // Extract local context: ~500 chars around cursor for better AI understanding
+    const contextRadius = 500;
+    const start = Math.max(0, selInfo.cursor - contextRadius);
+    const end = Math.min(markdown.length, selInfo.cursor + contextRadius);
+    const localContext = markdown.slice(start, end);
+
     return {
         text: markdown,
         cursor: selInfo.cursor,
         documentContext: markdown,
+        localContext: localContext,
+        // Also provide selection info
+        selection: selInfo.selectedText,
+        hasSelection: selInfo.hasSelection,
+        selectionStart: selInfo.hasSelection ? editor.view.state.selection.main.from : undefined,
+        selectionEnd: selInfo.hasSelection ? editor.view.state.selection.main.to : undefined,
     };
 }
 
+function handleAiActionStart(actionId: string, ctx: unknown): void {
+    console.log('[AI] Action start:', actionId);
+
+    if (!aiActionHandler) {
+        console.error('[AI] Action handler not initialized');
+        return;
+    }
+
+    // Cast context to the expected type
+    const context = ctx as AIActionContext;
+
+    // Start the streaming overlay immediately
+    aiActionHandler.handleActionStart(actionId, context).catch((err) => {
+        console.error('[AI] Failed to start action:', err);
+    });
+}
+
+function handleAiChunk(actionId: string, chunk: string, ctx: unknown): void {
+    if (!aiActionHandler) return;
+
+    // Cast context to the expected type
+    const context = ctx as AIActionContext;
+
+    // Stream the chunk to the overlay
+    aiActionHandler.handleChunk(actionId, chunk, context).catch((err) => {
+        console.error('[AI] Failed to stream chunk:', err);
+    });
+}
+
 function handleAiAction(actionId: string, result: unknown, ctx: unknown): void {
-    console.log('[AI] Action complete:', actionId);
+    console.log('[AI] Action complete:', actionId, result);
+
+    if (!aiActionHandler) {
+        console.error('[AI] Action handler not initialized');
+        return;
+    }
+
+    // Cast context to the expected type
+    const context = ctx as AIActionContext;
+
+    // Handle the action - this uses the streaming overlay and commits as single undo step
+    aiActionHandler.handleAction(actionId, result, context).then((success) => {
+        if (success) {
+            // Trigger autosave after successful AI edit
+            const currentPath = appState.currentFilePath;
+            if (currentPath) {
+                appState.markFileModified(currentPath);
+                scheduleAutosave();
+                updateFileIndicator();
+            }
+        }
+    }).catch((err) => {
+        console.error('[AI] Unexpected error in action handler:', err);
+    });
 }
 
 // ============================================================================
@@ -1025,9 +1412,13 @@ async function loadInitialState(): Promise<void> {
     const params = new URLSearchParams(window.location.search);
     const filePath = params.get('file');
 
+    // Initialize SessionState first to load recent projects/notebooks
+    await SessionState.initialize();
+
     if (filePath) {
         await openFile(filePath);
+    } else {
+        // No file specified - show home screen
+        HomeScreen.show();
     }
-
-    SessionState.initialize();
 }

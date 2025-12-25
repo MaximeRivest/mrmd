@@ -22,11 +22,14 @@ class FixGrammarPredict(dspy.Module):
         local_context: str,
         document_context: Optional[str] = None,
     ) -> dspy.Prediction:
-        return self.predictor(
+        print(f"[FixGrammar] Input: {repr(text_to_fix[:100])}", flush=True)
+        result = self.predictor(
             document_context=document_context,
             local_context=local_context,
             text_to_fix=text_to_fix,
         )
+        print(f"[FixGrammar] Output: {repr(result.fixed_text[:100] if hasattr(result, 'fixed_text') else 'NO fixed_text')}", flush=True)
+        return result
 
 
 class FixTranscriptionPredict(dspy.Module):

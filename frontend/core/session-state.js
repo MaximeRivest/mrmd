@@ -343,6 +343,7 @@ export async function openProject(projectPath, skipWarning = false, options = {}
                 cachedMtime: options.cachedMtime,
             } : null,
             openFileAfter: options.openFileAfter || null,  // Override active file
+            skipFileOpen: options.skipFileOpen || false,   // Skip file opening (already opened)
         });
         emit('session-changed', { venv: currentVenv, mode: sessionMode, project: currentProject, sessionName: currentSessionName });
 
@@ -1799,28 +1800,50 @@ export async function checkNotebookSavedSession(notebookPath) {
     }
 }
 
-// Initialize on load
+// Initialization state
+let _initialized = false;
+let _initializePromise = null;
+
+// Initialize on load (idempotent - safe to call multiple times)
 export async function initialize() {
-    // Run all initialization calls in parallel for faster startup
-    const [statusResult, projectsResult, notebooksResult] = await Promise.all([
-        checkMrmdStatus(),
-        loadRecentProjects(),
-        fetchRecentNotebooks(),
-    ]);
+    // If already initialized, return cached result
+    if (_initialized) {
+        return { showWelcome: shouldShowWelcome() };
+    }
 
-    // Check if we should show welcome
-    const showWelcome = shouldShowWelcome();
+    // If initialization is in progress, wait for it
+    if (_initializePromise) {
+        return _initializePromise;
+    }
 
-    // Emit initial state
-    emit('initialized', {
-        mrmdStatus,
-        sessionMode,
-        currentVenv,
-        currentProject,
-        recentProjects,
-        recentNotebooks,
-        showWelcome,
-    });
+    // Start initialization
+    _initializePromise = (async () => {
+        // Run all initialization calls in parallel for faster startup
+        const [statusResult, projectsResult, notebooksResult] = await Promise.all([
+            checkMrmdStatus(),
+            loadRecentProjects(),
+            fetchRecentNotebooks(),
+        ]);
 
-    return { showWelcome };
+        // Check if we should show welcome
+        const showWelcome = shouldShowWelcome();
+
+        // Mark as initialized
+        _initialized = true;
+
+        // Emit initial state
+        emit('initialized', {
+            mrmdStatus,
+            sessionMode,
+            currentVenv,
+            currentProject,
+            recentProjects,
+            recentNotebooks,
+            showWelcome,
+        });
+
+        return { showWelcome };
+    })();
+
+    return _initializePromise;
 }

@@ -289,113 +289,948 @@ var init_imageUrl = __esm({
   }
 });
 
-// src/apps/study/index.ts
-var study_exports = {};
-__export(study_exports, {
+// src/apps/codes/InterfaceManager.ts
+import * as SessionState from "/core/session-state.js";
+import { initCompactMode, destroyCompactMode } from "/core/compact-mode.js";
+async function createInterfaceManager(options) {
+  const manager = new InterfaceManager(options);
+  await manager.initialize();
+  return manager;
+}
+var InterfaceManager;
+var init_InterfaceManager = __esm({
+  "src/apps/codes/InterfaceManager.ts"() {
+    "use strict";
+    InterfaceManager = class {
+      constructor(options) {
+        __publicField(this, "options");
+        __publicField(this, "initialized", false);
+        __publicField(this, "currentMode");
+        __publicField(this, "listeners", /* @__PURE__ */ new Set());
+        __publicField(this, "cleanupFns", []);
+        this.options = options;
+        this.currentMode = SessionState.getInterfaceMode();
+      }
+      // ========================================================================
+      // Public API
+      // ========================================================================
+      /**
+       * Initialize the interface manager.
+       * Creates all UI elements for both modes and applies the current mode.
+       *
+       * Note: CSS class application is handled by mode-controller.js (called by
+       * compact-mode.js). InterfaceManager focuses on lifecycle coordination.
+       */
+      async initialize() {
+        if (this.initialized) {
+          console.warn("[InterfaceManager] Already initialized");
+          return;
+        }
+        console.log(`[InterfaceManager] Initializing with mode: ${this.currentMode}`);
+        this.initCompactUI();
+        const unsubscribe = SessionState.on("interface-mode-changed", (event) => {
+          this.handleModeChange(event.mode);
+        });
+        this.cleanupFns.push(unsubscribe);
+        this.initialized = true;
+        console.log("[InterfaceManager] Initialized");
+      }
+      /**
+       * Get the current interface mode.
+       */
+      getMode() {
+        return this.currentMode;
+      }
+      /**
+       * Check if currently in compact mode.
+       */
+      isCompact() {
+        return this.currentMode === "compact";
+      }
+      /**
+       * Check if currently in developer mode.
+       */
+      isDeveloper() {
+        return this.currentMode === "developer";
+      }
+      /**
+       * Set the interface mode.
+       * This triggers a mode transition with proper lifecycle.
+       */
+      setMode(mode) {
+        if (mode === this.currentMode) {
+          return;
+        }
+        SessionState.setInterfaceMode(mode);
+      }
+      /**
+       * Toggle between compact and developer modes.
+       */
+      toggle() {
+        this.setMode(this.currentMode === "compact" ? "developer" : "compact");
+      }
+      /**
+       * Get the full interface mode state.
+       */
+      getState() {
+        return {
+          mode: this.currentMode,
+          toolRailSide: SessionState.getToolRailSide(),
+          toolRailOpen: SessionState.getToolRailOpen(),
+          statusBarExpanded: SessionState.getStatusBarExpanded()
+        };
+      }
+      /**
+       * Subscribe to mode changes.
+       * @returns Unsubscribe function
+       */
+      onModeChange(listener) {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+      }
+      /**
+       * Destroy the interface manager and clean up resources.
+       */
+      destroy() {
+        this.cleanupFns.forEach((fn) => fn());
+        this.cleanupFns = [];
+        destroyCompactMode();
+        this.listeners.clear();
+        this.initialized = false;
+        console.log("[InterfaceManager] Destroyed");
+      }
+      // ========================================================================
+      // Private Methods
+      // ========================================================================
+      /**
+       * Initialize the compact mode UI elements.
+       */
+      initCompactUI() {
+        const { container: container2, editorPane, editor: editor2, getEditor, fileBrowser: fileBrowser2, createTerminal } = this.options;
+        initCompactMode({
+          container: container2,
+          editorPane,
+          editor: editor2,
+          getEditor: getEditor || (() => editor2),
+          fileBrowser: fileBrowser2,
+          createTerminal
+        });
+      }
+      /**
+       * Handle a mode change event.
+       * Note: CSS classes are applied by mode-controller.js, not here.
+       */
+      handleModeChange(newMode) {
+        if (newMode === this.currentMode) {
+          return;
+        }
+        const previousMode = this.currentMode;
+        console.log(`[InterfaceManager] Mode change: ${previousMode} \u2192 ${newMode}`);
+        this.onModeExit(previousMode);
+        this.currentMode = newMode;
+        this.onModeEnter(newMode);
+        const event = { previousMode, newMode };
+        this.listeners.forEach((listener) => listener(event));
+      }
+      /**
+       * Lifecycle hook: called when exiting a mode.
+       */
+      onModeExit(mode) {
+        if (mode === "compact") {
+        } else {
+        }
+      }
+      /**
+       * Lifecycle hook: called when entering a mode.
+       */
+      onModeEnter(mode) {
+        if (mode === "compact") {
+        } else {
+        }
+      }
+    };
+  }
+});
+
+// src/services/synonym-picker.ts
+function showSynonymPicker(options) {
+  const { view, synonyms, original, replaceFrom, replaceTo, position, onSelect, onDismiss } = options;
+  if (!synonyms || synonyms.length === 0) {
+    onDismiss?.();
+    return () => {
+    };
+  }
+  const picker = document.createElement("div");
+  picker.className = "synonym-picker";
+  picker.setAttribute("role", "listbox");
+  picker.setAttribute("aria-label", `Synonyms for "${original}"`);
+  Object.assign(picker.style, {
+    position: "fixed",
+    zIndex: "10000",
+    backgroundColor: "var(--surface, #1e1e1e)",
+    border: "1px solid var(--border, #333)",
+    borderRadius: "8px",
+    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
+    padding: "4px",
+    maxHeight: "300px",
+    overflowY: "auto",
+    minWidth: "150px",
+    maxWidth: "300px"
+  });
+  const header = document.createElement("div");
+  header.className = "synonym-picker-header";
+  header.textContent = `Synonyms for "${original}"`;
+  Object.assign(header.style, {
+    padding: "8px 12px",
+    fontSize: "0.8em",
+    color: "var(--text-muted, #888)",
+    borderBottom: "1px solid var(--border, #333)",
+    marginBottom: "4px"
+  });
+  picker.appendChild(header);
+  let selectedIndex = 0;
+  const items = [];
+  synonyms.forEach((synonym, index) => {
+    const item = document.createElement("div");
+    item.className = "synonym-picker-item";
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", index === 0 ? "true" : "false");
+    item.textContent = synonym;
+    Object.assign(item.style, {
+      padding: "8px 12px",
+      cursor: "pointer",
+      borderRadius: "4px",
+      transition: "background-color 0.1s"
+    });
+    if (index === 0) {
+      item.style.backgroundColor = "var(--hover, #2a2a2a)";
+    }
+    item.addEventListener("mouseenter", () => {
+      updateSelection(index);
+    });
+    item.addEventListener("click", () => {
+      selectSynonym(synonym);
+    });
+    picker.appendChild(item);
+    items.push(item);
+  });
+  function updateSelection(index) {
+    items.forEach((item, i) => {
+      if (i === index) {
+        item.style.backgroundColor = "var(--hover, #2a2a2a)";
+        item.setAttribute("aria-selected", "true");
+      } else {
+        item.style.backgroundColor = "";
+        item.setAttribute("aria-selected", "false");
+      }
+    });
+    selectedIndex = index;
+  }
+  function selectSynonym(synonym) {
+    view.dispatch({
+      changes: { from: replaceFrom, to: replaceTo, insert: synonym },
+      selection: { anchor: replaceFrom + synonym.length }
+    });
+    onSelect?.(synonym);
+    dismiss();
+  }
+  function dismiss() {
+    picker.remove();
+    document.removeEventListener("keydown", handleKeydown);
+    document.removeEventListener("mousedown", handleClickOutside);
+    onDismiss?.();
+  }
+  function handleKeydown(e) {
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        updateSelection((selectedIndex + 1) % items.length);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        updateSelection((selectedIndex - 1 + items.length) % items.length);
+        break;
+      case "Enter":
+        e.preventDefault();
+        selectSynonym(synonyms[selectedIndex]);
+        break;
+      case "Escape":
+        e.preventDefault();
+        dismiss();
+        break;
+      case "Tab":
+        e.preventDefault();
+        if (e.shiftKey) {
+          updateSelection((selectedIndex - 1 + items.length) % items.length);
+        } else {
+          updateSelection((selectedIndex + 1) % items.length);
+        }
+        break;
+    }
+  }
+  function handleClickOutside(e) {
+    if (!picker.contains(e.target)) {
+      dismiss();
+    }
+  }
+  let x = position?.x ?? 100;
+  let y = position?.y ?? 100;
+  if (!position) {
+    const coords = view.coordsAtPos(replaceFrom);
+    if (coords) {
+      x = coords.left;
+      y = coords.bottom + 4;
+    }
+  }
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  picker.style.left = `${Math.min(x, viewportWidth - 320)}px`;
+  picker.style.top = `${Math.min(y, viewportHeight - 320)}px`;
+  document.body.appendChild(picker);
+  const rect = picker.getBoundingClientRect();
+  if (rect.right > viewportWidth) {
+    picker.style.left = `${viewportWidth - rect.width - 10}px`;
+  }
+  if (rect.bottom > viewportHeight) {
+    picker.style.top = `${y - rect.height - 8}px`;
+  }
+  document.addEventListener("keydown", handleKeydown);
+  setTimeout(() => {
+    document.addEventListener("mousedown", handleClickOutside);
+  }, 100);
+  return dismiss;
+}
+function extractSynonyms(result) {
+  if (!result || typeof result !== "object") {
+    return [];
+  }
+  const r = result;
+  if (Array.isArray(r.synonyms)) {
+    return r.synonyms.filter((s) => typeof s === "string");
+  }
+  if (Array.isArray(r.alternatives)) {
+    return r.alternatives.filter((s) => typeof s === "string");
+  }
+  return [];
+}
+var init_synonym_picker = __esm({
+  "src/services/synonym-picker.ts"() {
+    "use strict";
+  }
+});
+
+// src/services/explain-panel.ts
+function showExplainPanel(options) {
+  const { view, explanation, code, position, onDismiss } = options;
+  const panel = document.createElement("div");
+  panel.className = "explain-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", "Code Explanation");
+  Object.assign(panel.style, {
+    position: "fixed",
+    zIndex: "10000",
+    backgroundColor: "var(--surface, #1e1e1e)",
+    border: "1px solid var(--border, #333)",
+    borderRadius: "12px",
+    boxShadow: "0 8px 24px rgba(0, 0, 0, 0.4)",
+    padding: "0",
+    maxHeight: "70vh",
+    maxWidth: "600px",
+    minWidth: "300px",
+    width: "500px",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden"
+  });
+  const header = document.createElement("div");
+  header.className = "explain-panel-header";
+  Object.assign(header.style, {
+    padding: "12px 16px",
+    borderBottom: "1px solid var(--border, #333)",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "var(--surface-elevated, #252525)"
+  });
+  const title = document.createElement("span");
+  title.textContent = "Code Explanation";
+  Object.assign(title.style, {
+    fontWeight: "600",
+    fontSize: "0.95em",
+    color: "var(--text, #fff)"
+  });
+  header.appendChild(title);
+  const closeBtn = document.createElement("button");
+  closeBtn.textContent = "\xD7";
+  closeBtn.setAttribute("aria-label", "Close");
+  Object.assign(closeBtn.style, {
+    background: "none",
+    border: "none",
+    fontSize: "1.4em",
+    cursor: "pointer",
+    color: "var(--text-muted, #888)",
+    padding: "0 4px",
+    lineHeight: "1"
+  });
+  closeBtn.addEventListener("click", dismiss);
+  closeBtn.addEventListener("mouseenter", () => {
+    closeBtn.style.color = "var(--text, #fff)";
+  });
+  closeBtn.addEventListener("mouseleave", () => {
+    closeBtn.style.color = "var(--text-muted, #888)";
+  });
+  header.appendChild(closeBtn);
+  panel.appendChild(header);
+  const content = document.createElement("div");
+  content.className = "explain-panel-content";
+  Object.assign(content.style, {
+    padding: "16px",
+    overflowY: "auto",
+    flex: "1",
+    fontSize: "0.9em",
+    lineHeight: "1.6",
+    color: "var(--text, #fff)"
+  });
+  if (code) {
+    const codeSection = document.createElement("div");
+    codeSection.className = "explain-panel-code";
+    Object.assign(codeSection.style, {
+      marginBottom: "16px",
+      padding: "12px",
+      backgroundColor: "var(--code-bg, #0d0d0d)",
+      borderRadius: "8px",
+      fontFamily: "var(--font-mono, monospace)",
+      fontSize: "0.85em",
+      overflow: "auto",
+      maxHeight: "150px",
+      whiteSpace: "pre-wrap",
+      color: "var(--text-muted, #aaa)"
+    });
+    codeSection.textContent = code;
+    content.appendChild(codeSection);
+  }
+  const explanationEl = document.createElement("div");
+  explanationEl.className = "explain-panel-explanation";
+  const rendered = renderSimpleMarkdown(explanation);
+  explanationEl.innerHTML = rendered;
+  content.appendChild(explanationEl);
+  panel.appendChild(content);
+  function dismiss() {
+    panel.remove();
+    document.removeEventListener("keydown", handleKeydown);
+    onDismiss?.();
+  }
+  function handleKeydown(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      dismiss();
+    }
+  }
+  let x = position?.x ?? 100;
+  let y = position?.y ?? 100;
+  if (!position) {
+    x = (window.innerWidth - 500) / 2;
+    y = Math.max(100, (window.innerHeight - 400) / 2);
+  }
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  panel.style.left = `${Math.max(20, Math.min(x, viewportWidth - 520))}px`;
+  panel.style.top = `${Math.max(20, Math.min(y, viewportHeight - 400))}px`;
+  document.body.appendChild(panel);
+  document.addEventListener("keydown", handleKeydown);
+  closeBtn.focus();
+  return dismiss;
+}
+function renderSimpleMarkdown(text) {
+  if (!text)
+    return "";
+  let html = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    return `<pre style="background: var(--code-bg, #0d0d0d); padding: 12px; border-radius: 6px; overflow: auto; margin: 12px 0;"><code>${code.trim()}</code></pre>`;
+  });
+  html = html.replace(/`([^`]+)`/g, '<code style="background: var(--code-bg, #0d0d0d); padding: 2px 6px; border-radius: 4px;">$1</code>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  html = html.replace(/_([^_]+)_/g, "<em>$1</em>");
+  html = html.replace(/^###### (.+)$/gm, '<h6 style="margin: 16px 0 8px 0; font-size: 0.9em;">$1</h6>');
+  html = html.replace(/^##### (.+)$/gm, '<h5 style="margin: 16px 0 8px 0; font-size: 0.95em;">$1</h5>');
+  html = html.replace(/^#### (.+)$/gm, '<h4 style="margin: 16px 0 8px 0; font-size: 1em;">$1</h4>');
+  html = html.replace(/^### (.+)$/gm, '<h3 style="margin: 16px 0 8px 0; font-size: 1.1em;">$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2 style="margin: 16px 0 8px 0; font-size: 1.2em;">$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1 style="margin: 16px 0 8px 0; font-size: 1.3em;">$1</h1>');
+  html = html.replace(/^[\-\*] (.+)$/gm, '<li style="margin-left: 20px;">$1</li>');
+  html = html.replace(/^\d+\. (.+)$/gm, '<li style="margin-left: 20px;">$1</li>');
+  html = html.replace(/\n\n+/g, '</p><p style="margin: 12px 0;">');
+  html = html.replace(/\n/g, "<br>");
+  html = `<p style="margin: 12px 0;">${html}</p>`;
+  return html;
+}
+function extractExplanation(result) {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+  const r = result;
+  if (typeof r.explanation === "string") {
+    return r.explanation;
+  }
+  if (typeof r.text === "string") {
+    return r.text;
+  }
+  if (typeof r.content === "string") {
+    return r.content;
+  }
+  return null;
+}
+var init_explain_panel = __esm({
+  "src/services/explain-panel.ts"() {
+    "use strict";
+  }
+});
+
+// src/services/ai-action-handler.ts
+function extractResultText(actionId, result) {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+  const r = result;
+  if (actionId === "finishLine" || actionId === "finishSection") {
+    return typeof r.completion === "string" ? r.completion : null;
+  }
+  if (actionId === "fixGrammar" || actionId === "fixTranscription") {
+    return typeof r.fixed_text === "string" ? r.fixed_text : null;
+  }
+  if (actionId === "fixCode") {
+    return typeof r.fixed_code === "string" ? r.fixed_code : null;
+  }
+  if (actionId === "documentCode") {
+    return typeof r.documented_code === "string" ? r.documented_code : null;
+  }
+  if (actionId === "simplifyCode") {
+    return typeof r.simplified_code === "string" ? r.simplified_code : null;
+  }
+  if (actionId === "formatCode") {
+    return typeof r.formatted_code === "string" ? r.formatted_code : null;
+  }
+  if (actionId === "reformatMarkdown") {
+    return typeof r.reformatted_text === "string" ? r.reformatted_text : null;
+  }
+  if (actionId === "correctAndFinish") {
+    if (typeof r.corrected_completion === "string") {
+      return r.corrected_completion;
+    }
+    const corrected = typeof r.corrected_text === "string" ? r.corrected_text : "";
+    const completion = typeof r.completion === "string" ? r.completion : "";
+    return corrected + completion || null;
+  }
+  if (actionId === "synonyms") {
+    return null;
+  }
+  if (actionId === "explainCode") {
+    return null;
+  }
+  if (actionId === "askClaude") {
+    return null;
+  }
+  if (typeof r.completion === "string")
+    return r.completion;
+  if (typeof r.text === "string")
+    return r.text;
+  if (typeof r.result === "string")
+    return r.result;
+  if (typeof r.content === "string")
+    return r.content;
+  return null;
+}
+function isReplaceAction(actionId) {
+  const replaceActions = /* @__PURE__ */ new Set([
+    "fixGrammar",
+    "fixTranscription",
+    "fixCode",
+    "documentCode",
+    "simplifyCode",
+    "formatCode",
+    "reformatMarkdown",
+    "correctAndFinish"
+  ]);
+  return replaceActions.has(actionId);
+}
+function isSpecialAction(actionId) {
+  const specialActions = /* @__PURE__ */ new Set([
+    "synonyms",
+    // Needs picker UI
+    "explainCode",
+    // Display in panel
+    "askClaude"
+    // Claude handles edits
+  ]);
+  return specialActions.has(actionId);
+}
+function getOperationLabel(actionId) {
+  const labels = {
+    finishLine: "Completing line",
+    finishSection: "Completing section",
+    fixGrammar: "Fixing grammar",
+    fixTranscription: "Fixing transcription",
+    fixCode: "Fixing code",
+    documentCode: "Documenting code",
+    simplifyCode: "Simplifying code",
+    formatCode: "Formatting code",
+    reformatMarkdown: "Reformatting markdown",
+    correctAndFinish: "Correcting & completing"
+  };
+  return labels[actionId] ?? "AI processing";
+}
+function createAIActionHandler(config) {
+  const { getView, getLockManager, getUser, onSuccess, onError } = config;
+  const defaultUser = {
+    userId: "local-user",
+    userName: "You",
+    userColor: "#3b82f6"
+  };
+  const activeStreams = /* @__PURE__ */ new Map();
+  let streamingFns = null;
+  async function getStreamingFunctions() {
+    if (streamingFns)
+      return streamingFns;
+    const streaming = await import("/editor-dist/index.browser.js");
+    streamingFns = streaming;
+    return streamingFns;
+  }
+  function getAnchorInfo(ctx, actionId, view) {
+    const shouldReplace = ctx.isReplace ?? isReplaceAction(actionId);
+    let anchorPos;
+    let anchorType;
+    let replaceFrom;
+    let replaceTo;
+    if (shouldReplace && ctx.selectionStart !== void 0 && ctx.selectionEnd !== void 0) {
+      anchorPos = ctx.selectionStart;
+      anchorType = "replace";
+      replaceFrom = ctx.selectionStart;
+      replaceTo = ctx.selectionEnd;
+    } else if (ctx.cursor !== void 0) {
+      anchorPos = ctx.cursor;
+      anchorType = "after";
+    } else if (ctx.selectionEnd !== void 0) {
+      anchorPos = ctx.selectionEnd;
+      anchorType = "after";
+    } else {
+      anchorPos = view.state.selection.main.head;
+      anchorType = "after";
+    }
+    return { anchorPos, anchorType, replaceFrom, replaceTo };
+  }
+  async function handleActionStart(actionId, ctx) {
+    if (isSpecialAction(actionId)) {
+      return;
+    }
+    const view = getView();
+    if (!view) {
+      console.warn("[AI] No editor view available for action start");
+      return;
+    }
+    const requestId = ctx.requestId ?? 0;
+    const user = getUser?.() ?? defaultUser;
+    try {
+      const { startStream } = await getStreamingFunctions();
+      const streamId = `ai-${actionId}-${requestId}`;
+      const anchor = getAnchorInfo(ctx, actionId, view);
+      startStream(view, {
+        id: streamId,
+        type: "ai",
+        anchorPos: anchor.anchorPos,
+        anchorType: anchor.anchorType,
+        replaceFrom: anchor.replaceFrom,
+        replaceTo: anchor.replaceTo,
+        owner: {
+          userId: user.userId,
+          userName: user.userName,
+          userColor: user.userColor
+        },
+        operation: getOperationLabel(actionId)
+      });
+      activeStreams.set(requestId, {
+        streamId,
+        actionId,
+        ctx,
+        hasContent: false
+      });
+      console.log(`[AI] Started stream '${streamId}' for '${actionId}'`);
+    } catch (err) {
+      console.error(`[AI] Failed to start stream for '${actionId}':`, err);
+    }
+  }
+  async function handleChunk(actionId, chunk, ctx) {
+    const requestId = ctx.requestId ?? 0;
+    const stream = activeStreams.get(requestId);
+    if (!stream) {
+      console.warn(`[AI] No active stream for requestId ${requestId}`);
+      return;
+    }
+    const view = getView();
+    if (!view)
+      return;
+    try {
+      const { streamChunk } = await getStreamingFunctions();
+      streamChunk(view, stream.streamId, chunk);
+      stream.hasContent = true;
+      console.log(`[AI] Streamed ${chunk.length} chars to '${stream.streamId}'`);
+    } catch (err) {
+      console.error(`[AI] Failed to stream chunk:`, err);
+    }
+  }
+  async function handleAction(actionId, result, ctx) {
+    const view = getView();
+    if (!view) {
+      console.warn("[AI] No editor view available");
+      onError?.(actionId, new Error("No editor available"));
+      return false;
+    }
+    const requestId = ctx.requestId ?? 0;
+    if (actionId === "synonyms") {
+      const stream2 = activeStreams.get(requestId);
+      if (stream2) {
+        try {
+          const { cancelStream } = await getStreamingFunctions();
+          cancelStream(view, stream2.streamId);
+          activeStreams.delete(requestId);
+        } catch (e) {
+        }
+      }
+      const synonyms = extractSynonyms(result);
+      if (synonyms.length === 0) {
+        console.warn("[AI] No synonyms in result", result);
+        onError?.(actionId, new Error("No synonyms found"));
+        return false;
+      }
+      const replaceFrom = ctx.selectionStart ?? ctx.cursor ?? view.state.selection.main.from;
+      const replaceTo = ctx.selectionEnd ?? ctx.cursor ?? view.state.selection.main.to;
+      showSynonymPicker({
+        view,
+        synonyms,
+        original: ctx.selection ?? "",
+        replaceFrom,
+        replaceTo,
+        position: ctx.palettePosition,
+        onSelect: (synonym) => {
+          console.log(`[AI] Selected synonym: "${synonym}"`);
+          onSuccess?.(actionId, synonym);
+        },
+        onDismiss: () => {
+          console.log("[AI] Synonym picker dismissed");
+        }
+      });
+      return true;
+    }
+    if (actionId === "explainCode") {
+      const stream2 = activeStreams.get(requestId);
+      if (stream2) {
+        try {
+          const { cancelStream } = await getStreamingFunctions();
+          cancelStream(view, stream2.streamId);
+          activeStreams.delete(requestId);
+        } catch (e) {
+        }
+      }
+      const explanation = extractExplanation(result);
+      if (!explanation) {
+        console.warn("[AI] No explanation in result", result);
+        onError?.(actionId, new Error("No explanation found"));
+        return false;
+      }
+      showExplainPanel({
+        view,
+        explanation,
+        code: ctx.selection,
+        position: ctx.palettePosition,
+        onDismiss: () => {
+          console.log("[AI] Explanation panel dismissed");
+        }
+      });
+      onSuccess?.(actionId, explanation);
+      return true;
+    }
+    if (isSpecialAction(actionId)) {
+      console.log(`[AI] Special action '${actionId}' - no text insertion`);
+      return true;
+    }
+    const text = extractResultText(actionId, result);
+    if (!text) {
+      console.warn(`[AI] No insertable text for action '${actionId}'`, result);
+      const streamToCancel = activeStreams.get(requestId);
+      if (streamToCancel) {
+        try {
+          const { cancelStream } = await getStreamingFunctions();
+          cancelStream(view, streamToCancel.streamId);
+          activeStreams.delete(requestId);
+        } catch (e) {
+        }
+      }
+      onError?.(actionId, new Error("No text in AI response"));
+      return false;
+    }
+    const stream = activeStreams.get(requestId);
+    const user = getUser?.() ?? defaultUser;
+    try {
+      const { startStream, streamChunk, completeStream, commitStream } = await getStreamingFunctions();
+      let streamId;
+      if (stream) {
+        streamId = stream.streamId;
+        if (!stream.hasContent) {
+          streamChunk(view, streamId, text);
+        }
+        completeStream(view, streamId);
+      } else {
+        streamId = `ai-${actionId}-${Date.now()}`;
+        const anchor = getAnchorInfo(ctx, actionId, view);
+        startStream(view, {
+          id: streamId,
+          type: "ai",
+          anchorPos: anchor.anchorPos,
+          anchorType: anchor.anchorType,
+          replaceFrom: anchor.replaceFrom,
+          replaceTo: anchor.replaceTo,
+          owner: {
+            userId: user.userId,
+            userName: user.userName,
+            userColor: user.userColor
+          },
+          operation: getOperationLabel(actionId)
+        });
+        streamChunk(view, streamId, text);
+        completeStream(view, streamId);
+      }
+      const commitResult = commitStream({
+        streamId,
+        view,
+        onCommit: (content) => {
+          console.log(`[AI] Committed ${content.length} chars for '${actionId}'`);
+          onSuccess?.(actionId, content);
+        },
+        onError: (err) => {
+          console.error(`[AI] Commit failed for '${actionId}':`, err);
+          onError?.(actionId, err);
+        }
+      });
+      activeStreams.delete(requestId);
+      return commitResult.success;
+    } catch (err) {
+      console.error(`[AI] Failed to apply action '${actionId}':`, err);
+      activeStreams.delete(requestId);
+      onError?.(actionId, err instanceof Error ? err : new Error(String(err)));
+      return false;
+    }
+  }
+  async function cancelAction(requestId) {
+    const stream = activeStreams.get(requestId);
+    if (!stream)
+      return;
+    const view = getView();
+    if (!view)
+      return;
+    try {
+      const { cancelStream } = await getStreamingFunctions();
+      cancelStream(view, stream.streamId);
+      activeStreams.delete(requestId);
+      console.log(`[AI] Cancelled stream '${stream.streamId}'`);
+    } catch (err) {
+      console.error(`[AI] Failed to cancel stream:`, err);
+    }
+  }
+  return {
+    handleActionStart,
+    handleChunk,
+    handleAction,
+    cancelAction,
+    extractResultText,
+    isReplaceAction,
+    isSpecialAction
+  };
+}
+var init_ai_action_handler = __esm({
+  "src/services/ai-action-handler.ts"() {
+    "use strict";
+    init_synonym_picker();
+    init_explain_panel();
+  }
+});
+
+// src/apps/codes/index.ts
+var codes_exports = {};
+__export(codes_exports, {
   mount: () => mount
 });
 import {
   createEditor,
-  IPythonExecutor,
-  createMinimalIPythonClient
+  IPythonExecutor
 } from "/editor-dist/index.browser.js";
 import { IPythonClient as IPythonClient2 } from "/core/ipython-client.js";
-import * as SessionState from "/core/session-state.js";
+import * as SessionState2 from "/core/session-state.js";
+import { createFileTabs } from "/core/file-tabs.js";
+import { createRecentProjectsPanel } from "/core/recent-projects.js";
+import { createFileBrowser } from "/core/file-browser.js";
 import { AiClient } from "/core/ai-client.js";
 import { createAiPalette } from "/core/ai-palette.js";
+import { HistoryPanel } from "/core/history-panel.js";
+import { createTerminalTabs } from "/core/terminal-tabs.js";
+import { createNotificationManager } from "/core/notifications.js";
+import { createProcessSidebar } from "/core/process-sidebar.js";
+import { toggleMode, HomeScreen } from "/core/compact-mode.js";
 import { initSelectionToolbar } from "/core/selection-toolbar.js";
-async function mount(svc) {
-  console.log("[Study] Mounting Writer Mode...");
+import * as VariablesPanel from "/core/variables-panel.js";
+import { initEditorKeybindings } from "/core/editor-keybindings.js";
+async function mount(svc, options = {}) {
+  const defaultMode = options.defaultMode ?? "developer";
+  const modeName = defaultMode === "compact" ? "Study" : "Codes";
+  console.log(`[Atelier] Mounting in ${modeName} mode (${defaultMode})...`);
   services = svc;
-  container = document.getElementById("editor-container");
-  if (!container) {
-    renderStudyUI();
-    container = document.getElementById("editor-container");
-  }
-  hideDevChrome();
+  SessionState2.setInterfaceMode(defaultMode);
+  noCollab = new URLSearchParams(window.location.search).has("noCollab");
+  initDOMReferences();
   initClients();
   initEditor();
+  await initUIModules();
+  await initInterfaceMode();
+  await initCollaboration();
+  setupEventHandlers();
   setupKeyboardShortcuts();
+  initVariablesPanel();
+  initFileWatching();
   await loadInitialState();
-  console.log("[Study] Writer Mode ready");
+  console.log(`[Atelier] ${modeName} mode ready`);
 }
-function renderStudyUI() {
-  const appFrame = document.querySelector(".app-frame");
-  if (appFrame)
-    return;
-  document.body.innerHTML = `
-        <div class="study-container">
-            <div class="study-header">
-                <span class="study-file-name" id="study-file-name"></span>
-                <span class="study-status" id="study-status"></span>
-            </div>
-            <div class="study-editor" id="editor-container"></div>
-        </div>
-        <style>
-            .study-container {
-                display: flex;
-                flex-direction: column;
-                height: 100vh;
-                background: var(--bg, #1a1b26);
-            }
-            .study-header {
-                display: flex;
-                justify-content: space-between;
-                padding: 12px 24px;
-                font-size: 12px;
-                color: var(--muted, #565f89);
-                opacity: 0;
-                transition: opacity 0.2s;
-            }
-            .study-container:hover .study-header {
-                opacity: 1;
-            }
-            .study-editor {
-                flex: 1;
-                max-width: 800px;
-                margin: 0 auto;
-                width: 100%;
-                padding: 40px 24px;
-                overflow-y: auto;
-            }
-        </style>
-    `;
-}
-function hideDevChrome() {
-  const sidebar = document.querySelector(".sidebar");
-  if (sidebar)
-    sidebar.style.display = "none";
-  const resizer = document.getElementById("sidebar-resizer");
-  if (resizer)
-    resizer.style.display = "none";
-  const fileTabs2 = document.getElementById("file-tabs-container");
-  if (fileTabs2)
-    fileTabs2.style.display = "none";
-  const statusBar = document.querySelector(".status-bar");
-  if (statusBar) {
-    const hideItems = statusBar.querySelectorAll(
-      ".restart-btn, .view-mode-group, .ai-run-group, .theme-picker-wrapper, .session-badge, .venv-badge"
-    );
-    hideItems.forEach((item) => item.style.display = "none");
+function initDOMReferences() {
+  container = document.getElementById("editor-container");
+  rawTextarea = document.getElementById("raw-markdown");
+  cursorPosEl = document.getElementById("cursor-pos");
+  execStatusEl = document.getElementById("exec-status");
+  if (!container) {
+    throw new Error("[Codes] Missing #editor-container element");
   }
-  document.body.classList.add("study-mode");
 }
 function initClients() {
   ipython = new IPythonClient2({ apiBase: "" });
   aiClient = new AiClient();
+  aiClient.isAvailable().then((available) => {
+    if (available) {
+      console.log("[AI] Server available");
+    } else {
+      console.log("[AI] Server not available - AI features disabled");
+    }
+  });
 }
 function initEditor() {
-  const ipythonClient = createMinimalIPythonClient("");
-  const executor = new IPythonExecutor({ client: ipythonClient });
+  ipythonExecutor = new IPythonExecutor({ client: ipython });
   const resolveImageUrl = createImageUrlResolver(() => documentBasePath);
   editor = createEditor({
     parent: container,
     doc: "",
-    executor,
+    executor: ipythonExecutor,
     theme: "zen",
     resolveImageUrl,
     onChange: (doc) => {
       if (!silentUpdate) {
+        rawTextarea.value = doc;
         const currentPath = appState.currentFilePath;
         if (currentPath) {
           appState.updateFileContent(currentPath, doc, true);
@@ -404,7 +1239,8 @@ function initEditor() {
         }
       }
     },
-    onCursorChange: (_info) => {
+    onCursorChange: (info) => {
+      cursorPosEl.textContent = String(info.pos);
     },
     onComplete: async (code, cursorPos, lang) => {
       if (lang !== "python")
@@ -423,6 +1259,7 @@ function initEditor() {
     }
   });
   setContent("", true);
+  rawTextarea.value = "";
   initSelectionToolbar(container, {
     getContent: () => editor.getDoc(),
     getSelectionInfo: () => getSelectionInfo(),
@@ -440,29 +1277,36 @@ function initEditor() {
       return true;
     }
   });
-  const aiPalette2 = createAiPalette({
-    aiClient,
-    onAction: handleAiAction,
-    onError: (err) => console.error("[AI] Error:", err),
-    getContext: () => ({
-      text: editor.getDoc(),
-      cursor: getSelectionInfo().cursor,
-      documentContext: editor.getDoc()
-    })
-  });
-  aiPalette2.attachToEditor({
-    container,
-    getCursorScreenPosition: () => {
-      const sel = window.getSelection();
-      if (sel && sel.rangeCount > 0) {
-        const range = sel.getRangeAt(0);
-        const rect = range.getBoundingClientRect();
-        return { x: rect.left, y: rect.top };
-      }
-      return null;
+  rawTextarea.addEventListener("input", () => {
+    setContent(rawTextarea.value, true);
+    const currentPath = appState.currentFilePath;
+    if (currentPath) {
+      appState.markFileModified(currentPath);
+      scheduleAutosave();
+      updateFileIndicator();
     }
   });
   editor.focus();
+  aiActionHandler = createAIActionHandler({
+    getView: () => editor?.view ?? null,
+    getLockManager: () => editor?.lockManager ?? null,
+    getUser: () => ({
+      userId: "local-user",
+      userName: "You",
+      userColor: "#3b82f6"
+    }),
+    onSuccess: (actionId, content) => {
+      console.log(`[AI] Successfully applied '${actionId}': ${content.length} chars`);
+    },
+    onError: (actionId, error) => {
+      console.error(`[AI] Failed to apply '${actionId}':`, error);
+      notificationManager?.addLocalNotification(
+        "AI Action Failed",
+        error.message,
+        "error"
+      );
+    }
+  });
 }
 function setContent(markdown, silent = false) {
   if (silent) {
@@ -479,262 +1323,11 @@ function setContent(markdown, silent = false) {
 function getContent() {
   return editor.getDoc();
 }
+function setDocumentBasePath(path) {
+  documentBasePath = path;
+}
 function getSelectionInfo() {
   const state = editor.view.state;
-  const selection = state.selection.main;
-  return {
-    cursor: selection.head,
-    hasSelection: !selection.empty,
-    selectedText: state.sliceDoc(selection.from, selection.to)
-  };
-}
-async function openFile(path) {
-  console.log("[Study] Opening file:", path);
-  try {
-    const file = await services.documents.openFile(path);
-    appState.openFile(path, file.content, {
-      mtime: file.mtime ?? null,
-      modified: false
-    });
-    setContent(file.content, true);
-    const filename = path.split("/").pop() || path;
-    document.title = filename.replace(/\.md$/, "");
-    updateFileIndicator();
-    if (path.endsWith(".md")) {
-      const session = await SessionState.getNotebookSession(path);
-      ipython.setSession(session);
-    }
-  } catch (err) {
-    console.error("[Study] Failed to open file:", err);
-  }
-}
-async function saveFile() {
-  const currentPath = appState.currentFilePath;
-  if (!currentPath)
-    return;
-  try {
-    await services.documents.saveFile(currentPath, getContent());
-    appState.markFileSaved(currentPath);
-    updateFileIndicator();
-  } catch (err) {
-    console.error("[Study] Save failed:", err);
-  }
-}
-function scheduleAutosave() {
-  const currentPath = appState.currentFilePath;
-  if (!currentPath || !appState.isModified)
-    return;
-  if (autosaveTimer) {
-    clearTimeout(autosaveTimer);
-  }
-  autosaveTimer = setTimeout(async () => {
-    if (appState.currentFilePath && appState.isModified) {
-      await saveFile();
-    }
-  }, AUTOSAVE_DELAY);
-}
-function updateFileIndicator() {
-  const fileNameEl = document.getElementById("study-file-name");
-  const statusEl = document.getElementById("study-status");
-  const currentPath = appState.currentFilePath;
-  if (fileNameEl && currentPath) {
-    const filename = currentPath.split("/").pop()?.replace(/\.md$/, "") || "";
-    fileNameEl.textContent = filename;
-  }
-  if (statusEl) {
-    statusEl.textContent = appState.isModified ? "Editing" : "";
-  }
-  const indicator = document.querySelector(".current-file-indicator");
-  if (indicator && currentPath) {
-    indicator.classList.add("visible");
-    const fileName = currentPath.split("/").pop() || currentPath;
-    const nameEl = indicator.querySelector(".file-name");
-    if (nameEl)
-      nameEl.textContent = fileName + (appState.isModified ? " *" : "");
-  }
-}
-function setupKeyboardShortcuts() {
-  document.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-      e.preventDefault();
-      saveFile();
-    }
-    if (e.key === "Escape") {
-      editor.focus();
-    }
-  });
-}
-function handleAiAction(actionId, _result) {
-  console.log("[Study] AI action:", actionId);
-}
-async function loadInitialState() {
-  const params = new URLSearchParams(window.location.search);
-  const filePath = params.get("file");
-  if (filePath) {
-    await openFile(filePath);
-  }
-}
-var services, editor, ipython, aiClient, container, documentBasePath, silentUpdate, AUTOSAVE_DELAY, autosaveTimer;
-var init_study = __esm({
-  "src/apps/study/index.ts"() {
-    "use strict";
-    init_AppState();
-    init_imageUrl();
-    documentBasePath = "";
-    silentUpdate = false;
-    AUTOSAVE_DELAY = 2e3;
-    autosaveTimer = null;
-  }
-});
-
-// src/apps/codes/index.ts
-var codes_exports = {};
-__export(codes_exports, {
-  mount: () => mount2
-});
-import {
-  createEditor as createEditor2,
-  IPythonExecutor as IPythonExecutor2,
-  createMinimalIPythonClient as createMinimalIPythonClient2
-} from "/editor-dist/index.browser.js";
-import { IPythonClient as IPythonClient3 } from "/core/ipython-client.js";
-import * as SessionState2 from "/core/session-state.js";
-import { createFileTabs } from "/core/file-tabs.js";
-import { createRecentProjectsPanel } from "/core/recent-projects.js";
-import { createFileBrowser } from "/core/file-browser.js";
-import { AiClient as AiClient2 } from "/core/ai-client.js";
-import { createAiPalette as createAiPalette2 } from "/core/ai-palette.js";
-import { HistoryPanel } from "/core/history-panel.js";
-import { createTerminalTabs } from "/core/terminal-tabs.js";
-import { createNotificationManager } from "/core/notifications.js";
-import { createProcessSidebar } from "/core/process-sidebar.js";
-import { toggleMode } from "/core/compact-mode.js";
-import { initSelectionToolbar as initSelectionToolbar2 } from "/core/selection-toolbar.js";
-async function mount2(svc) {
-  console.log("[Codes] Mounting Developer Mode...");
-  services2 = svc;
-  noCollab = new URLSearchParams(window.location.search).has("noCollab");
-  initDOMReferences();
-  initClients2();
-  initEditor2();
-  await initUIModules();
-  await initCollaboration();
-  setupEventHandlers();
-  setupKeyboardShortcuts2();
-  initFileWatching();
-  await loadInitialState2();
-  console.log("[Codes] Developer Mode ready");
-}
-function initDOMReferences() {
-  container2 = document.getElementById("editor-container");
-  rawTextarea = document.getElementById("raw-markdown");
-  cursorPosEl = document.getElementById("cursor-pos");
-  execStatusEl = document.getElementById("exec-status");
-  if (!container2) {
-    throw new Error("[Codes] Missing #editor-container element");
-  }
-}
-function initClients2() {
-  ipython2 = new IPythonClient3({ apiBase: "" });
-  aiClient2 = new AiClient2();
-  aiClient2.isAvailable().then((available) => {
-    if (available) {
-      console.log("[AI] Server available");
-    } else {
-      console.log("[AI] Server not available - AI features disabled");
-    }
-  });
-}
-function initEditor2() {
-  const ipythonClient = createMinimalIPythonClient2("");
-  const executor = new IPythonExecutor2({ client: ipythonClient });
-  const resolveImageUrl = createImageUrlResolver(() => documentBasePath2);
-  editor2 = createEditor2({
-    parent: container2,
-    doc: "",
-    executor,
-    theme: "zen",
-    resolveImageUrl,
-    onChange: (doc) => {
-      if (!silentUpdate2) {
-        rawTextarea.value = doc;
-        const currentPath = appState.currentFilePath;
-        if (currentPath) {
-          appState.updateFileContent(currentPath, doc, true);
-          scheduleAutosave2();
-          updateFileIndicator2();
-        }
-      }
-    },
-    onCursorChange: (info) => {
-      cursorPosEl.textContent = String(info.pos);
-    },
-    onComplete: async (code, cursorPos, lang) => {
-      if (lang !== "python")
-        return null;
-      return await ipython2.complete(code, cursorPos);
-    },
-    onInspect: async (code, cursorPos, lang) => {
-      if (lang !== "python")
-        return null;
-      return await ipython2.inspect(code, cursorPos);
-    },
-    onHover: async (word, lang) => {
-      if (lang !== "python")
-        return null;
-      return await ipython2.hoverInspect(word);
-    }
-  });
-  setContent2("", true);
-  rawTextarea.value = "";
-  initSelectionToolbar2(container2, {
-    getContent: () => editor2.getDoc(),
-    getSelectionInfo: () => getSelectionInfo2(),
-    replaceTextRange: (text, start, end) => {
-      editor2.view.dispatch({
-        changes: { from: start, to: end, insert: text }
-      });
-      return true;
-    },
-    insertTextAtCursor: (text) => {
-      const pos = editor2.getCursor();
-      editor2.view.dispatch({
-        changes: { from: pos, insert: text }
-      });
-      return true;
-    }
-  });
-  rawTextarea.addEventListener("input", () => {
-    setContent2(rawTextarea.value, true);
-    const currentPath = appState.currentFilePath;
-    if (currentPath) {
-      appState.markFileModified(currentPath);
-      scheduleAutosave2();
-      updateFileIndicator2();
-    }
-  });
-  editor2.focus();
-}
-function setContent2(markdown, silent = false) {
-  if (silent) {
-    silentUpdate2 = true;
-    try {
-      editor2.setDoc(markdown);
-    } finally {
-      silentUpdate2 = false;
-    }
-  } else {
-    editor2.setDoc(markdown);
-  }
-}
-function getContent2() {
-  return editor2.getDoc();
-}
-function setDocumentBasePath(path) {
-  documentBasePath2 = path;
-}
-function getSelectionInfo2() {
-  const state = editor2.view.state;
   const selection = state.selection.main;
   return {
     cursor: selection.head,
@@ -764,10 +1357,13 @@ async function initUIModules() {
       mode: "browse",
       showFilter: true,
       showProjectButton: true,
-      onSelect: (path) => openFile2(path),
+      onSelect: (path) => openFile(path),
       onNavigate: (path) => {
         browserRoot = path;
         localStorage.setItem("mrmd_browser_root", browserRoot);
+      },
+      onOpenProject: (path) => {
+        SessionState2.openProject(path);
       }
     });
   }
@@ -777,19 +1373,21 @@ async function initUIModules() {
       container: terminalContainer
     });
   }
-  aiPalette = createAiPalette2({
-    aiClient: aiClient2,
+  aiPalette = createAiPalette({
+    aiClient,
     onRunningChange: (count) => {
       updateRunningBadge(count);
     },
-    onAction: handleAiAction2,
+    onActionStart: handleAiActionStart,
+    onChunk: handleAiChunk,
+    onAction: handleAiAction,
     onError: (err, actionId) => {
       console.error("[AI] Error:", actionId, err);
     },
     getContext: getAiContext
   });
   aiPalette.attachToEditor({
-    container: container2,
+    container,
     getCursorScreenPosition: () => {
       const sel = window.getSelection();
       if (sel && sel.rangeCount > 0) {
@@ -814,24 +1412,40 @@ async function initUIModules() {
       container: processContainer
     });
   }
-  const projectsPanel = document.getElementById("projects-panel");
-  if (projectsPanel) {
-    createRecentProjectsPanel({
-      container: projectsPanel,
-      onProjectSelect: (path) => openProject2(path)
+  const projectsPanelContainer = document.getElementById("projects-panel");
+  if (projectsPanelContainer) {
+    const projectsPanelEl = createRecentProjectsPanel({
+      onProjectOpen: (path) => openProject2(path)
     });
+    projectsPanelContainer.appendChild(projectsPanelEl);
   }
   initSidebarTabs();
   initSidebarResizer();
   initThemePicker();
   initModeToggle();
 }
+async function initInterfaceMode() {
+  const mainContainer = document.querySelector(".container");
+  const editorPane = document.querySelector(".editor-pane");
+  if (!mainContainer || !editorPane) {
+    console.error("[Codes] Cannot initialize interface mode: missing container elements");
+    return;
+  }
+  interfaceManager = await createInterfaceManager({
+    container: mainContainer,
+    editorPane,
+    editor,
+    getEditor: () => editor,
+    fileBrowser
+  });
+  console.log(`[Codes] Interface mode: ${interfaceManager.getMode()}`);
+}
 async function initCollaboration() {
   if (noCollab) {
     console.log("[Collab] Disabled via ?noCollab");
     return;
   }
-  const collab = services2.collaboration;
+  const collab = services.collaboration;
   collab.onConnected((info) => {
     console.log("[Collab] Connected:", info.session_id);
     stopPollingFallback();
@@ -870,38 +1484,120 @@ function setupEventHandlers() {
   });
   SessionState2.on("project-opened", handleProjectOpened);
   SessionState2.on("project-created", handleProjectCreated);
+  SessionState2.on("kernel-initializing", ({ message }) => {
+    execStatusEl.textContent = message || "initializing...";
+    execStatusEl.classList.add("kernel-switching");
+  });
+  SessionState2.on("kernel-ready", () => {
+    execStatusEl.textContent = "ready";
+    execStatusEl.classList.remove("kernel-switching");
+  });
+  SessionState2.on("kernel-error", ({ error }) => {
+    execStatusEl.textContent = "kernel error";
+    execStatusEl.classList.remove("kernel-switching");
+    showNotification("Kernel Error", error, "error");
+  });
+  let pendingFileSwitch = null;
+  SessionState2.on("file-switch-requested", async ({ path }) => {
+    console.log("[Codes] File switch requested:", path);
+    if (pendingFileSwitch === path) {
+      console.log("[Codes] Ignoring duplicate file switch request:", path);
+      return;
+    }
+    pendingFileSwitch = path;
+    HomeScreen.hide();
+    try {
+      await openFile(path);
+      editor?.focus();
+    } catch (err) {
+      console.error("[Codes] Failed to open file:", err);
+      showNotification("Error", `Failed to open file: ${err}`, "error");
+      HomeScreen.show();
+    } finally {
+      setTimeout(() => {
+        if (pendingFileSwitch === path) {
+          pendingFileSwitch = null;
+        }
+      }, 100);
+    }
+  });
+  SessionState2.on("new-notebook-requested", async ({ projectPath, initialContent }) => {
+    console.log("[Codes] New notebook requested:", projectPath);
+    HomeScreen.hide();
+    try {
+      await createNewNotebook(projectPath, initialContent);
+    } catch (err) {
+      console.error("[Codes] Failed to create notebook:", err);
+      showNotification("Error", `Failed to create notebook: ${err}`, "error");
+      HomeScreen.show();
+    }
+  });
+  SessionState2.on("project-open-requested", async ({ path }) => {
+    console.log("[Codes] Project open requested:", path);
+    HomeScreen.hide();
+    try {
+      await openProject2(path);
+    } catch (err) {
+      console.error("[Codes] Failed to open project:", err);
+      showNotification("Error", `Failed to open project: ${err}`, "error");
+      HomeScreen.show();
+    }
+  });
+  SessionState2.on("quick-capture-requested", async () => {
+    console.log("[Codes] Quick capture requested");
+    HomeScreen.hide();
+    try {
+      await createNewNotebook();
+    } catch (err) {
+      console.error("[Codes] Failed to create notebook:", err);
+      showNotification("Error", `Failed to create notebook: ${err}`, "error");
+      HomeScreen.show();
+    }
+  });
   window.addEventListener("focus", () => {
-    if (!services2.collaboration.isConnected) {
+    if (!services.collaboration.isConnected) {
       setTimeout(checkFileChanges, 100);
     }
   });
   window.addEventListener("beforeunload", () => {
     const currentPath = appState.currentFilePath;
     if (currentPath) {
-      appState.updateFileScrollTop(currentPath, container2.scrollTop);
+      appState.updateFileScrollTop(currentPath, container.scrollTop);
     }
   });
 }
-function setupKeyboardShortcuts2() {
-  document.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-      e.preventDefault();
-      saveFile2();
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key === "p") {
-      e.preventDefault();
-      focusFileBrowser();
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key === "\\") {
-      e.preventDefault();
-      toggleMode();
-    }
+function setupKeyboardShortcuts() {
+  initEditorKeybindings({ getEditor: () => editor, statusEl: execStatusEl });
+}
+function initVariablesPanel() {
+  const variablesPanelContainer = document.getElementById("variables-panel");
+  if (!variablesPanelContainer) {
+    console.warn("[Codes] Variables panel container not found");
+    return;
+  }
+  variablesPanelContainer.innerHTML = "";
+  const panelEl = VariablesPanel.createVariablesPanel({
+    ipython
+  });
+  variablesPanelContainer.appendChild(panelEl);
+  SessionState2.on("kernel-ready", () => {
+    console.log("[Codes] Kernel ready - refreshing variables panel");
+    VariablesPanel.refresh();
+  });
+  document.addEventListener("mrmd:execution-complete", (event) => {
+    console.log("[Codes] Execution complete event - refreshing variables panel");
+    VariablesPanel.refresh();
   });
 }
-async function openFile2(path, options = {}) {
-  console.log("[Codes] Opening file:", path, options);
+async function openFile(path, options = {}) {
+  const loadId = ++currentFileLoadId;
+  console.log("[Codes] Opening file:", path, options, `(loadId: ${loadId})`);
   try {
-    const file = await services2.documents.openFile(path);
+    const file = await services.documents.openFile(path);
+    if (loadId !== currentFileLoadId && !options.background) {
+      console.log("[Codes] Skipping stale file load:", path, `(loadId: ${loadId}, current: ${currentFileLoadId})`);
+      return;
+    }
     appState.openFile(path, file.content, {
       mtime: file.mtime ?? null,
       modified: false
@@ -909,60 +1605,43 @@ async function openFile2(path, options = {}) {
     const filename = path.split("/").pop() || path;
     fileTabs?.addTab(path, filename, false);
     if (!options.background) {
+      if (loadId !== currentFileLoadId) {
+        console.log("[Codes] Skipping stale editor update:", path);
+        return;
+      }
       appState.setCurrentFile(path);
       fileTabs?.setActiveTab(path);
-      setContent2(file.content, true);
+      setContent(file.content, true);
       rawTextarea.value = file.content;
       document.title = `${filename} - MRMD`;
-      updateFileIndicator2();
+      updateFileIndicator();
       if (path.endsWith(".md")) {
         const session = await SessionState2.getNotebookSession(path);
-        ipython2.setSession(session);
-        SessionState2.setCurrentSessionName(session);
+        if (loadId === currentFileLoadId) {
+          ipython.setSession(session);
+          SessionState2.setCurrentSessionName(session);
+        }
       }
     }
   } catch (err) {
-    console.error("[Codes] Failed to open file:", err);
-    showNotification("Error", `Failed to open file: ${err}`, "error");
-  }
-}
-async function saveFile2() {
-  const currentPath = appState.currentFilePath;
-  if (!currentPath)
-    return;
-  const content = getContent2();
-  execStatusEl.textContent = "saving...";
-  try {
-    await services2.documents.saveFile(currentPath, content);
-    appState.markFileSaved(currentPath);
-    updateFileIndicator2();
-    execStatusEl.textContent = "saved";
-    if (services2.collaboration.isConnected) {
-      services2.collaboration.notifyFileSaved(currentPath);
+    if (loadId === currentFileLoadId) {
+      console.error("[Codes] Failed to open file:", err);
+      showNotification("Error", `Failed to open file: ${err}`, "error");
     }
-    setTimeout(() => {
-      if (execStatusEl.textContent === "saved") {
-        execStatusEl.textContent = "ready";
-      }
-    }, 1e3);
-  } catch (err) {
-    console.error("[Codes] Save failed:", err);
-    execStatusEl.textContent = "save failed";
-    showNotification("Error", `Save failed: ${err}`, "error");
   }
 }
-function scheduleAutosave2() {
+function scheduleAutosave() {
   const currentPath = appState.currentFilePath;
   if (!currentPath || !appState.isModified)
     return;
-  if (autosaveTimer2) {
-    clearTimeout(autosaveTimer2);
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer);
   }
   if (Date.now() - lastSaveTime > AUTOSAVE_MAX_INTERVAL) {
     doAutosave();
     return;
   }
-  autosaveTimer2 = setTimeout(doAutosave, AUTOSAVE_DELAY2);
+  autosaveTimer = setTimeout(doAutosave, AUTOSAVE_DELAY);
 }
 async function doAutosave() {
   const currentPath = appState.currentFilePath;
@@ -971,11 +1650,11 @@ async function doAutosave() {
   console.log("[Autosave] Saving", currentPath);
   execStatusEl.textContent = "autosaving...";
   try {
-    const content = getContent2();
-    await services2.documents.saveFile(currentPath, content, { message: "autosave" });
+    const content = getContent();
+    await services.documents.saveFile(currentPath, content, { message: "autosave" });
     appState.markFileSaved(currentPath);
     lastSaveTime = Date.now();
-    updateFileIndicator2();
+    updateFileIndicator();
     execStatusEl.textContent = "autosaved";
     setTimeout(() => {
       if (execStatusEl.textContent === "autosaved") {
@@ -987,25 +1666,44 @@ async function doAutosave() {
     execStatusEl.textContent = "autosave failed";
   }
 }
+async function createNewNotebook(projectPath, initialContent) {
+  const currentProject = appState.project;
+  const scratchPath = SessionState2.getScratchPath();
+  const basePath = projectPath || currentProject?.path || scratchPath || browserRoot;
+  const timestamp = Date.now();
+  const filename = `Untitled-${timestamp}.md`;
+  const filePath = `${basePath}/${filename}`;
+  const content = initialContent || "# Untitled\n\n";
+  console.log("[Codes] Creating new notebook:", filePath);
+  try {
+    await services.documents.saveFile(filePath, content);
+    await openFile(filePath);
+    SessionState2.addRecentNotebook(filePath, "Untitled");
+    editor?.focus();
+  } catch (err) {
+    console.error("[Codes] Failed to create notebook:", err);
+    showNotification("Error", `Failed to create notebook: ${err}`, "error");
+  }
+}
 async function handleTabSelect(path) {
   const currentPath = appState.currentFilePath;
   if (currentPath) {
-    appState.updateFileScrollTop(currentPath, container2.scrollTop);
+    appState.updateFileScrollTop(currentPath, container.scrollTop);
   }
   const file = appState.openFiles.get(path);
   if (file) {
-    setContent2(file.content, true);
+    setContent(file.content, true);
     rawTextarea.value = file.content;
     appState.setCurrentFile(path);
-    updateFileIndicator2();
+    updateFileIndicator();
     const filename = path.split("/").pop() || path;
     document.title = `${filename} - MRMD`;
     requestAnimationFrame(() => {
-      container2.scrollTop = file.scrollTop;
+      container.scrollTop = file.scrollTop;
     });
     if (path.endsWith(".md")) {
       const session = await SessionState2.getNotebookSession(path);
-      ipython2.setSession(session);
+      ipython.setSession(session);
       SessionState2.setCurrentSessionName(session);
     }
   }
@@ -1014,7 +1712,7 @@ async function handleBeforeTabClose(path) {
   const file = appState.openFiles.get(path);
   if (file?.modified) {
     try {
-      await services2.documents.saveFile(path, file.content);
+      await services.documents.saveFile(path, file.content);
     } catch (err) {
       console.error("[Tabs] Error saving before close:", err);
     }
@@ -1026,10 +1724,10 @@ async function handleTabClose(path) {
   if (newActivePath) {
     await handleTabSelect(newActivePath);
   } else {
-    setContent2("", true);
+    setContent("", true);
     rawTextarea.value = "";
     document.title = "MRMD";
-    updateFileIndicator2();
+    updateFileIndicator();
   }
 }
 async function openProject2(path) {
@@ -1046,14 +1744,14 @@ async function handleProjectOpened(project) {
   });
   browserRoot = project.path;
   localStorage.setItem("mrmd_browser_root", browserRoot);
-  fileBrowser?.setRoot?.(project.path);
-  ipython2.setSession("main");
-  ipython2.setProjectPath(project.path);
-  ipython2.setFigureDir(project.path + "/.mrmd/assets");
+  fileBrowser?.setRoot(project.path);
+  ipython.setSession("main");
+  ipython.setProjectPath(project.path);
+  ipython.setFigureDir(project.path + "/.mrmd/assets");
   setDocumentBasePath(project.path);
-  if (!noCollab && !services2.collaboration.isConnected) {
+  if (!noCollab && !services.collaboration.isConnected) {
     try {
-      await services2.collaboration.connect({
+      await services.collaboration.connect({
         projectRoot: project.path,
         userName: "user",
         userType: "human"
@@ -1062,13 +1760,45 @@ async function handleProjectOpened(project) {
       console.warn("[Collab] Connection failed:", err);
     }
   }
+  if (project.skipFileOpen) {
+    console.log("[Codes] Skipping file open (already opened)");
+    return;
+  }
+  const savedTabs = project.savedTabs;
+  const fileToOpen = project.openFileAfter || savedTabs?.active;
+  if (fileToOpen) {
+    console.log("[Codes] Opening file after project switch:", fileToOpen);
+    try {
+      await openFile(fileToOpen);
+    } catch (err) {
+      console.warn("[Codes] Failed to open file:", fileToOpen, err);
+    }
+  }
+  if (savedTabs?.tabs && savedTabs.tabs.length > 0) {
+    const otherTabs = savedTabs.tabs.filter((t) => t !== fileToOpen);
+    if (otherTabs.length > 0) {
+      console.log("[Codes] Restoring other tabs in background:", otherTabs);
+      SessionState2.setRestoringTabs(true);
+      try {
+        for (const tabPath of otherTabs) {
+          try {
+            await openFile(tabPath, { background: true });
+          } catch (err) {
+            console.warn("[Codes] Failed to restore tab:", tabPath, err);
+          }
+        }
+      } finally {
+        SessionState2.setRestoringTabs(false);
+      }
+    }
+  }
 }
 function handleProjectCreated({ mainNotebook }) {
   if (mainNotebook) {
-    openFile2(mainNotebook);
+    openFile(mainNotebook);
   }
 }
-function updateFileIndicator2() {
+function updateFileIndicator() {
   const indicator = document.querySelector(".current-file-indicator");
   if (!indicator)
     return;
@@ -1109,7 +1839,7 @@ function initFileWatching() {
     startPollingFallback();
   } else {
     setTimeout(() => {
-      if (!services2.collaboration.isConnected) {
+      if (!services.collaboration.isConnected) {
         startPollingFallback();
       }
     }, 3e3);
@@ -1134,7 +1864,7 @@ async function checkFileChanges() {
     return;
   const paths = Array.from(openFiles.keys());
   try {
-    const result = await services2.documents.getMtimes(paths);
+    const result = await services.documents.getMtimes(paths);
     for (const [path, newMtime] of Object.entries(result.mtimes)) {
       if (newMtime === null)
         continue;
@@ -1151,21 +1881,21 @@ async function checkFileChanges() {
 }
 async function handleExternalFileChange(path) {
   try {
-    const fileData = await services2.documents.readFile(path);
+    const fileData = await services.documents.readFile(path);
     const newContent = fileData.content;
     const file = appState.openFiles.get(path);
     if (file) {
       if (path === appState.currentFilePath) {
-        const oldContent = getContent2();
+        const oldContent = getContent();
         if (newContent !== oldContent) {
-          const oldCursor = editor2.getCursor();
-          const scrollTop = container2.scrollTop;
+          const oldCursor = editor.getCursor();
+          const scrollTop = container.scrollTop;
           const newCursor = adjustCursorPosition(oldContent, newContent, oldCursor);
-          setContent2(newContent, false);
+          setContent(newContent, false);
           rawTextarea.value = newContent;
-          editor2.setCursor(newCursor);
+          editor.setCursor(newCursor);
           requestAnimationFrame(() => {
-            container2.scrollTop = scrollTop;
+            container.scrollTop = scrollTop;
           });
         }
       }
@@ -1198,16 +1928,62 @@ function adjustCursorPosition(oldContent, newContent, oldCursor) {
   return Math.min(newContent.length - commonSuffix, newContent.length);
 }
 function getAiContext() {
-  const selInfo = getSelectionInfo2();
-  const markdown = getContent2();
+  const selInfo = getSelectionInfo();
+  const markdown = getContent();
+  const contextRadius = 500;
+  const start = Math.max(0, selInfo.cursor - contextRadius);
+  const end = Math.min(markdown.length, selInfo.cursor + contextRadius);
+  const localContext = markdown.slice(start, end);
   return {
     text: markdown,
     cursor: selInfo.cursor,
-    documentContext: markdown
+    documentContext: markdown,
+    localContext,
+    // Also provide selection info
+    selection: selInfo.selectedText,
+    hasSelection: selInfo.hasSelection,
+    selectionStart: selInfo.hasSelection ? editor.view.state.selection.main.from : void 0,
+    selectionEnd: selInfo.hasSelection ? editor.view.state.selection.main.to : void 0
   };
 }
-function handleAiAction2(actionId, result, ctx) {
-  console.log("[AI] Action complete:", actionId);
+function handleAiActionStart(actionId, ctx) {
+  console.log("[AI] Action start:", actionId);
+  if (!aiActionHandler) {
+    console.error("[AI] Action handler not initialized");
+    return;
+  }
+  const context = ctx;
+  aiActionHandler.handleActionStart(actionId, context).catch((err) => {
+    console.error("[AI] Failed to start action:", err);
+  });
+}
+function handleAiChunk(actionId, chunk, ctx) {
+  if (!aiActionHandler)
+    return;
+  const context = ctx;
+  aiActionHandler.handleChunk(actionId, chunk, context).catch((err) => {
+    console.error("[AI] Failed to stream chunk:", err);
+  });
+}
+function handleAiAction(actionId, result, ctx) {
+  console.log("[AI] Action complete:", actionId, result);
+  if (!aiActionHandler) {
+    console.error("[AI] Action handler not initialized");
+    return;
+  }
+  const context = ctx;
+  aiActionHandler.handleAction(actionId, result, context).then((success) => {
+    if (success) {
+      const currentPath = appState.currentFilePath;
+      if (currentPath) {
+        appState.markFileModified(currentPath);
+        scheduleAutosave();
+        updateFileIndicator();
+      }
+    }
+  }).catch((err) => {
+    console.error("[AI] Unexpected error in action handler:", err);
+  });
 }
 function initSidebarTabs() {
   const tabs = document.querySelectorAll(".sidebar-tab");
@@ -1282,41 +2058,39 @@ function initModeToggle() {
     document.body.classList.toggle("zen-mode", appState.ui.zenMode);
   });
 }
-function focusFileBrowser() {
-  document.querySelectorAll(".sidebar-tab").forEach((t) => t.classList.remove("active"));
-  document.querySelectorAll(".sidebar-panel").forEach((p) => p.classList.remove("active"));
-  const filesTab = document.querySelector('.sidebar-tab[data-panel="files"]');
-  const filesPanel = document.getElementById("files-panel");
-  filesTab?.classList.add("active");
-  filesPanel?.classList.add("active");
-  fileBrowser?.focus();
-}
-async function loadInitialState2() {
+async function loadInitialState() {
   browserRoot = localStorage.getItem("mrmd_browser_root") || "/home";
   const params = new URLSearchParams(window.location.search);
   const filePath = params.get("file");
+  await SessionState2.initialize();
   if (filePath) {
-    await openFile2(filePath);
+    await openFile(filePath);
+  } else {
+    HomeScreen.show();
   }
-  SessionState2.initialize();
 }
-var services2, editor2, ipython2, aiClient2, fileTabs, fileBrowser, terminalTabs, notificationManager, aiPalette, historyPanel, container2, rawTextarea, cursorPosEl, execStatusEl, browserRoot, documentBasePath2, silentUpdate2, AUTOSAVE_DELAY2, AUTOSAVE_MAX_INTERVAL, autosaveTimer2, lastSaveTime, fileCheckInterval, noCollab;
+var services, editor, ipython, ipythonExecutor, aiClient, fileTabs, fileBrowser, terminalTabs, notificationManager, aiPalette, historyPanel, interfaceManager, aiActionHandler, container, rawTextarea, cursorPosEl, execStatusEl, browserRoot, documentBasePath, silentUpdate, AUTOSAVE_DELAY, AUTOSAVE_MAX_INTERVAL, autosaveTimer, lastSaveTime, fileCheckInterval, noCollab, currentFileLoadId;
 var init_codes = __esm({
   "src/apps/codes/index.ts"() {
     "use strict";
     init_AppState();
     init_imageUrl();
+    init_InterfaceManager();
+    init_ai_action_handler();
     notificationManager = null;
     historyPanel = null;
+    interfaceManager = null;
+    aiActionHandler = null;
     browserRoot = "/home";
-    documentBasePath2 = "";
-    silentUpdate2 = false;
-    AUTOSAVE_DELAY2 = 2e3;
+    documentBasePath = "";
+    silentUpdate = false;
+    AUTOSAVE_DELAY = 2e3;
     AUTOSAVE_MAX_INTERVAL = 3e4;
-    autosaveTimer2 = null;
+    autosaveTimer = null;
     lastSaveTime = Date.now();
     fileCheckInterval = null;
     noCollab = false;
+    currentFileLoadId = 0;
   }
 });
 
@@ -2183,17 +2957,13 @@ function createServices() {
 }
 async function boot() {
   const mode = detectMode();
-  console.log(`[Boot] Starting Atelier in ${mode === "study" ? "Study" : "Codes"} mode...`);
-  const services3 = createServices();
+  const defaultInterface = mode === "study" ? "compact" : "developer";
+  console.log(`[Boot] Starting Atelier (${mode} \u2192 ${defaultInterface} mode)...`);
+  const services2 = createServices();
   console.log("[Boot] Services initialized");
   try {
-    if (mode === "study") {
-      const app = await Promise.resolve().then(() => (init_study(), study_exports));
-      await app.mount(services3);
-    } else {
-      const app = await Promise.resolve().then(() => (init_codes(), codes_exports));
-      await app.mount(services3);
-    }
+    const app = await Promise.resolve().then(() => (init_codes(), codes_exports));
+    await app.mount(services2, { defaultMode: defaultInterface });
     console.log(`[Boot] ${mode === "study" ? "Study" : "Codes"} mode ready`);
   } catch (err) {
     console.error("[Boot] Failed to load app:", err);

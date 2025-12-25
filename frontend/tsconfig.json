@@ -10,10 +10,15 @@
     "declarationMap": true,
     "outDir": "./dist",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "allowJs": true
+    "allowJs": true,
+    "baseUrl": ".",
+    "paths": {
+      "/editor-dist/index.browser.js": ["core/editor-dist.d.ts"]
+    }
   },
   "include": [
     "core/globals.d.ts",
+    "core/editor-dist.d.ts",
     "src"
   ],
   "exclude": ["node_modules", "dist"]

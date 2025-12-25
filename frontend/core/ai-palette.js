@@ -3,9 +3,13 @@
  *
  * A subtle floating palette that appears when mouse is near the text cursor,
  * providing quick access to AI completion, fix, and correction programs.
+ *
+ * Keybindings are defined centrally in keybindings.js
  */
 
 import { AiClient, aiClient } from './ai-client.js';
+import { KeybindingManager } from './keybinding-manager.js';
+import { KEYBINDINGS, getAiSpellBindings, getBindingDisplayString } from './keybindings.js';
 
 /**
  * Juice Levels - Progressive quality/cost tradeoff
@@ -163,8 +167,8 @@ const AI_SPELLS = [
     },
 ];
 
-// Double-tap j to open menu
-const DOUBLE_TAP_MS = 300;
+// Note: Double-tap detection for 'jj' is now handled by KeybindingManager
+// with timeout configured in keybindings.js (doubleTimeout: 300)
 
 /**
  * Create an AI palette instance.
@@ -172,6 +176,8 @@ const DOUBLE_TAP_MS = 300;
 export function createAiPalette(options = {}) {
     const client = options.aiClient || aiClient;
     const onAction = options.onAction || (() => {});
+    const onActionStart = options.onActionStart || (() => {}); // Called when AI request starts
+    const onChunk = options.onChunk || (() => {}); // Called with content chunks during streaming
     const onError = options.onError || ((err) => console.error('AI error:', err));
     const getContext = options.getContext || (() => ({}));
     const onRunningChange = options.onRunningChange || (() => {}); // Called when pending count changes
@@ -188,10 +194,8 @@ export function createAiPalette(options = {}) {
     // Cursor tracking
     let cursorScreenPos = null; // { x, y } of text cursor on screen
 
-    // Double-tap detection
-    let lastKeyTime = 0;
-    let lastKey = null;
-    let capturedSelection = null; // Selection captured on first 'j' for fix actions
+    // Selection state (captured when jj is pressed or when selection is made)
+    let capturedSelection = null;
 
     // Pending AI request tracking - supports multiple concurrent requests
     // Map of requestId -> { actionId, selectionStart, selectionEnd, isReplace, markerEl, result, filePath }
@@ -597,110 +601,9 @@ export function createAiPalette(options = {}) {
         return 0;
     }
 
-    /**
-     * Start charging a spell
-     */
-    function startCharging(spell) {
-        if (chargeState) return; // Already charging
-
-        const overlay = createChargeOverlay();
-
-        // Position overlay near cursor or palette
-        if (cursorScreenPos) {
-            overlay.style.left = `${cursorScreenPos.x}px`;
-            overlay.style.top = `${cursorScreenPos.y + 30}px`;
-        } else if (paletteEl) {
-            const rect = paletteEl.getBoundingClientRect();
-            overlay.style.left = `${rect.left}px`;
-            overlay.style.top = `${rect.bottom + 8}px`;
-        }
-
-        // Set the key being charged
-        overlay.querySelector('.charge-key').textContent = spell.key;
-        overlay.querySelector('.charge-level-label').textContent = JUICE_LEVELS[0].name;
-        overlay.querySelector('.charge-bar-fill').style.width = '0%';
-
-        overlay.classList.add('visible');
-
-        chargeState = {
-            spell,
-            startTime: Date.now(),
-            animFrame: null
-        };
-
-        // Start animation loop
-        animateCharge();
-    }
-
-    /**
-     * Animation loop for charge indicator
-     */
-    function animateCharge() {
-        if (!chargeState) return;
-
-        const elapsed = Date.now() - chargeState.startTime;
-        const progress = Math.min(elapsed / MAX_CHARGE_TIME, 1);
-        const currentLevel = getJuiceLevelFromTime(elapsed);
-
-        // Update overlay
-        if (chargeOverlay) {
-            chargeOverlay.querySelector('.charge-bar-fill').style.width = `${progress * 100}%`;
-            chargeOverlay.querySelector('.charge-level-label').textContent = JUICE_LEVELS[currentLevel].name;
-        }
-
-        // Update palette segments (show charging state)
-        if (paletteEl) {
-            const segments = paletteEl.querySelectorAll('.juice-segment');
-            segments.forEach((seg, i) => {
-                seg.classList.toggle('active', i <= currentLevel);
-                seg.classList.toggle('charging', i === currentLevel && elapsed > 100);
-            });
-            const juiceLabel = paletteEl.querySelector('.juice-label');
-            if (juiceLabel) {
-                juiceLabel.textContent = JUICE_LEVELS[currentLevel].name;
-            }
-        }
-
-        chargeState.animFrame = requestAnimationFrame(animateCharge);
-    }
-
-    /**
-     * Complete charging and execute the spell
-     */
-    function completeCharging() {
-        if (!chargeState) return;
-
-        // Cancel animation
-        if (chargeState.animFrame) {
-            cancelAnimationFrame(chargeState.animFrame);
-        }
-
-        // Calculate final juice level
-        const elapsed = Date.now() - chargeState.startTime;
-        const finalLevel = getJuiceLevelFromTime(elapsed);
-        const spell = chargeState.spell;
-
-        // Hide overlay
-        if (chargeOverlay) {
-            chargeOverlay.classList.remove('visible');
-        }
-
-        // Set the juice level
-        juiceLevel = finalLevel;
-        localStorage.setItem('mrmd-juice-level', juiceLevel.toString());
-        updateJuiceIndicator();
-
-        // Clear charge state
-        chargeState = null;
-
-        // If spell needs user prompt, show prompt input instead of executing
-        if (spell.needsPrompt) {
-            showPromptInput(spell);
-        } else {
-            // Execute the spell
-            executeAction(spell.id);
-        }
-    }
+    // Note: Old startCharging, animateCharge, completeCharging functions removed.
+    // Charging is now handled via KeybindingManager hold callbacks
+    // (startChargingForSpell, updateChargingProgress, completeChargingWithDuration)
 
     /**
      * Cancel charging without executing
@@ -1126,6 +1029,23 @@ export function createAiPalette(options = {}) {
         // Track that we have pending requests (for UI indicator)
         setLoading(true);
 
+        // Build context object for callbacks
+        const startCtx = {
+            ...ctx,
+            selection: thisRequest?.selection ?? selection,
+            hasSelection: thisRequest?.hasSelection ?? hasSelection,
+            selectionStart: thisRequest?.selectionStart ?? selectionStart,
+            selectionEnd: thisRequest?.selectionEnd ?? selectionEnd,
+            cursor: thisRequest?.cursor ?? cursor,
+            isReplace: thisRequest?.isReplace ?? isReplaceAction,
+            scopeMode: scopeMode,
+            requestId: requestId
+        };
+
+        // Notify that we're starting an AI action
+        // This allows the handler to show the streaming overlay immediately
+        onActionStart(actionId, startCtx);
+
         // Create streaming callbacks to update pending marker
         const streamCallbacks = {
             stream: true,
@@ -1153,6 +1073,11 @@ export function createAiPalette(options = {}) {
                 const completed = Object.values(data.models_status).filter(s => s === 'complete').length;
                 const total = Object.keys(data.models_status).length;
                 updatePendingStatus(requestId, `${completed}/${total} models done`, data.models_status);
+            },
+            onContentChunk: (data) => {
+                // Content streaming - pass chunks to handler for live updates
+                // data: { chunk: "partial content", field: "completion" }
+                onChunk(actionId, data.chunk, startCtx);
             },
             onError: (err) => {
                 updatePendingStatus(requestId, `Error: ${err.message}`);
@@ -1424,206 +1349,13 @@ export function createAiPalette(options = {}) {
     }
 
     // ===========================================================================
-    // Keyboard Shortcuts - jj opens menu, then letter to cast
+    // Legacy helper functions (kept for compatibility)
+    // Keyboard handling is now done via KeybindingManager
     // ===========================================================================
 
-    function handleKeydown(e) {
-        // Allow jj even while requests are pending (non-blocking AI)
-        if (e.altKey || e.ctrlKey || e.metaKey) return;
-
-        const key = e.key.toLowerCase();
-        const now = Date.now();
-
-        // If menu is open, handle navigation and spell keys
-        if (isVisible) {
-            // Tab toggles scope mode
-            if (e.key === 'Tab') {
-                e.preventDefault();
-                e.stopPropagation();
-                toggleScopeMode();
-                return;
-            }
-
-            // If charging, handle it specially
-            if (chargeState) {
-                e.preventDefault();
-                e.stopPropagation();
-                // Cancel if different key pressed
-                if (chargeState.spell.key !== key) {
-                    cancelCharging();
-                }
-                // Either way, we handled it
-                return;
-            }
-
-            // Arrow keys navigate the list
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                e.stopPropagation();
-                highlightedIndex = (highlightedIndex + 1) % filteredSpells.length;
-                updateHighlight();
-                return;
-            }
-            if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                e.stopPropagation();
-                highlightedIndex = (highlightedIndex - 1 + filteredSpells.length) % filteredSpells.length;
-                updateHighlight();
-                return;
-            }
-
-            // Enter executes highlighted spell (or shows prompt if needed)
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                e.stopPropagation();
-                const spell = filteredSpells[highlightedIndex];
-                if (spell) {
-                    if (spell.needsPrompt) {
-                        showPromptInput(spell);
-                    } else {
-                        executeAction(spell.id);
-                    }
-                }
-                return;
-            }
-
-            // Letter key starts charging (execute on keyup)
-            // Ignore key repeat events - only respond to initial press
-            const spell = filteredSpells.find(s => s.key === key);
-            if (spell) {
-                e.preventDefault();
-                e.stopPropagation();
-                // Only start charging on initial keydown, not repeats
-                if (!e.repeat && !chargeState) {
-                    startCharging(spell);
-                }
-                return;
-            }
-
-            // Escape closes menu (stop propagation so it doesn't exit code cell)
-            if (key === 'escape') {
-                e.preventDefault();
-                e.stopPropagation();
-                hide();
-                return;
-            }
-
-            // Any other key closes menu but let the key through
-            hide();
-            return;
-        }
-
-        // Double-tap j to open menu
-        if (key === 'j') {
-            if (lastKey === 'j' && (now - lastKeyTime) < DOUBLE_TAP_MS) {
-                e.preventDefault();
-                e.stopPropagation();
-
-                // First 'j' was prevented, so nothing to delete
-                updateCursorPosition();
-                showMenu();
-                lastKey = null;
-                lastKeyTime = 0;
-                return;
-            }
-
-            // First 'j' - capture selection/cursor AND document state BEFORE 'j' modifies anything
-            const sel = window.getSelection();
-            const editorCtx = getContext();
-
-            if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
-                // There's a selection - capture it and prevent the 'j' from replacing it
-                e.preventDefault();
-
-                capturedSelection = {
-                    text: sel.toString(),
-                    range: sel.getRangeAt(0).cloneRange(),
-                    // Capture editor's selection info NOW, before anything changes
-                    selectionStart: editorCtx.selectionStart,
-                    selectionEnd: editorCtx.selectionEnd,
-                    selectedText: editorCtx.selectedText || editorCtx.selection,
-                    cursor: editorCtx.cursor,
-                    hadSelection: true,
-                    // Capture document state for word extraction
-                    documentContext: editorCtx.documentContext,
-                    localContext: editorCtx.localContext
-                };
-            } else {
-                // No selection - ALSO prevent the 'j' and capture everything
-                // We'll restore if second 'j' doesn't come
-                e.preventDefault();
-
-                capturedSelection = {
-                    cursor: editorCtx.cursor,
-                    hadSelection: false,
-                    // Capture document state for word extraction (without the 'j')
-                    documentContext: editorCtx.documentContext,
-                    localContext: editorCtx.localContext
-                };
-            }
-            // Set timeout to type 'j' if second 'j' doesn't come
-            setTimeout(() => {
-                if (lastKey === 'j' && (Date.now() - lastKeyTime) >= DOUBLE_TAP_MS) {
-                    // Second 'j' didn't come - type the 'j' that was prevented
-                    if (capturedSelection && !capturedSelection.hadSelection) {
-                        insertCharAtCursor('j');
-                    }
-                    capturedSelection = null;
-                }
-            }, DOUBLE_TAP_MS + 50);
-
-            lastKey = 'j';
-            lastKeyTime = now;
-        }
-    }
-
-    /**
-     * Handle keyup globally - complete charging when spell key is released
-     */
-    function handleGlobalKeyup(e) {
-        if (!chargeState) return;
-
-        const key = e.key.toLowerCase();
-
-        // If the released key matches the charging spell, complete it
-        if (chargeState.spell.key === key) {
-            e.preventDefault();
-            e.stopPropagation();
-            completeCharging();
-        }
-    }
-
-    function deleteLastChar() {
-        // Try to delete the 'j' that was typed before the double-tap
-        const activeEl = document.activeElement;
-
-        // Handle textarea/input (code cells)
-        if (activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
-            const start = activeEl.selectionStart;
-            if (start > 0) {
-                const value = activeEl.value;
-                activeEl.value = value.slice(0, start - 1) + value.slice(start);
-                activeEl.selectionStart = activeEl.selectionEnd = start - 1;
-                // Trigger input event so editor knows content changed
-                activeEl.dispatchEvent(new Event('input', { bubbles: true }));
-            }
-            return;
-        }
-
-        // Handle contenteditable (normal text)
-        const sel = window.getSelection();
-        if (sel && sel.rangeCount > 0) {
-            const range = sel.getRangeAt(0);
-            if (range.collapsed && range.startOffset > 0) {
-                // Move back one character and delete
-                range.setStart(range.startContainer, range.startOffset - 1);
-                range.deleteContents();
-            }
-        }
-    }
-
     function insertCharAtCursor(char) {
-        // Insert a character at current cursor position (used when first 'j' wasn't followed by second)
+        // Insert a character at current cursor position
+        // Used by KeybindingManager.insertPendingChar for double-tap handling
         const activeEl = document.activeElement;
 
         // Handle textarea/input (code cells)
@@ -1734,9 +1466,8 @@ export function createAiPalette(options = {}) {
             document.addEventListener('selectionchange', handleCursorChange);
         }
 
-        // Attach keyboard shortcuts globally with capture to intercept before editor
-        document.addEventListener('keydown', handleKeydown, true);
-        document.addEventListener('keyup', handleGlobalKeyup, true);
+        // Register keybindings with centralized manager
+        registerAiPaletteKeybindings();
 
         // Initial cursor position
         updateCursorPosition();
@@ -1749,10 +1480,237 @@ export function createAiPalette(options = {}) {
                 editor.container.removeEventListener('click', handleCursorChange);
                 document.removeEventListener('selectionchange', handleCursorChange);
             }
-            document.removeEventListener('keydown', handleKeydown, true);
-            document.removeEventListener('keyup', handleGlobalKeyup, true);
+            unregisterAiPaletteKeybindings();
             cancelCharging(); // Clean up any pending charge
         };
+    }
+
+    // ===========================================================================
+    // Keybinding Registration
+    // ===========================================================================
+
+    /**
+     * Register keybinding handlers with centralized KeybindingManager
+     */
+    function registerAiPaletteKeybindings() {
+        // Register context provider for ai-menu
+        KeybindingManager.registerContext('ai-menu', () => isVisible);
+
+        // Set up hold callbacks for charging UI
+        KeybindingManager.setHoldCallbacks({
+            onHoldStart: (id, binding) => {
+                if (!id.startsWith('ai:spell:')) return;
+                // Find the spell by its id/key
+                const spell = filteredSpells.find(s => s.id === binding.spellId);
+                if (spell) {
+                    startChargingForSpell(spell);
+                }
+            },
+            onHoldProgress: (id, binding, elapsed) => {
+                if (!id.startsWith('ai:spell:')) return;
+                updateChargingProgress(elapsed);
+            },
+            onHoldComplete: (id, binding, elapsed) => {
+                if (!id.startsWith('ai:spell:')) return;
+                completeChargingWithDuration(elapsed, binding.spellId);
+            },
+            onHoldCancel: (id, binding) => {
+                if (!id.startsWith('ai:spell:')) return;
+                cancelCharging();
+            },
+        });
+
+        // Open menu with jj double-tap
+        KeybindingManager.handle('ai:open-menu', (e) => {
+            // Capture selection before showing menu
+            const sel = window.getSelection();
+            const editorCtx = getContext();
+
+            if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+                capturedSelection = {
+                    text: sel.toString(),
+                    range: sel.getRangeAt(0).cloneRange(),
+                    selectionStart: editorCtx.selectionStart,
+                    selectionEnd: editorCtx.selectionEnd,
+                    selectedText: editorCtx.selectedText || editorCtx.selection,
+                    cursor: editorCtx.cursor,
+                    hadSelection: true,
+                    documentContext: editorCtx.documentContext,
+                    localContext: editorCtx.localContext
+                };
+            } else {
+                capturedSelection = {
+                    cursor: editorCtx.cursor,
+                    hadSelection: false,
+                    documentContext: editorCtx.documentContext,
+                    localContext: editorCtx.localContext
+                };
+            }
+
+            updateCursorPosition();
+            showMenu();
+        });
+
+        // Close menu
+        KeybindingManager.handle('ai:close-menu', () => {
+            hide();
+        });
+
+        // Toggle scope mode
+        KeybindingManager.handle('ai:toggle-scope', () => {
+            toggleScopeMode();
+        });
+
+        // Navigate up
+        KeybindingManager.handle('ai:navigate-up', () => {
+            highlightedIndex = (highlightedIndex - 1 + filteredSpells.length) % filteredSpells.length;
+            updateHighlight();
+        });
+
+        // Navigate down
+        KeybindingManager.handle('ai:navigate-down', () => {
+            highlightedIndex = (highlightedIndex + 1) % filteredSpells.length;
+            updateHighlight();
+        });
+
+        // Execute selected
+        KeybindingManager.handle('ai:execute-selected', () => {
+            const spell = filteredSpells[highlightedIndex];
+            if (spell) {
+                if (spell.needsPrompt) {
+                    showPromptInput(spell);
+                } else {
+                    executeAction(spell.id);
+                }
+            }
+        });
+
+        // Register handlers for each spell key
+        // These use hold behavior defined in keybindings.js
+        const spellBindings = getAiSpellBindings();
+        for (const binding of spellBindings) {
+            KeybindingManager.handle(binding.id, (e, bindingDef, opts) => {
+                // The handler is called after hold completes
+                // opts.holdDuration contains the duration
+                const spell = AI_SPELLS.find(s => s.id === bindingDef.spellId);
+                if (spell) {
+                    if (spell.needsPrompt) {
+                        showPromptInput(spell);
+                    } else {
+                        executeAction(spell.id);
+                    }
+                }
+            });
+        }
+    }
+
+    /**
+     * Unregister keybinding handlers
+     */
+    function unregisterAiPaletteKeybindings() {
+        KeybindingManager.unregisterContext('ai-menu');
+        KeybindingManager.setHoldCallbacks({});
+
+        KeybindingManager.unhandle('ai:open-menu');
+        KeybindingManager.unhandle('ai:close-menu');
+        KeybindingManager.unhandle('ai:toggle-scope');
+        KeybindingManager.unhandle('ai:navigate-up');
+        KeybindingManager.unhandle('ai:navigate-down');
+        KeybindingManager.unhandle('ai:execute-selected');
+
+        const spellBindings = getAiSpellBindings();
+        for (const binding of spellBindings) {
+            KeybindingManager.unhandle(binding.id);
+        }
+    }
+
+    /**
+     * Start charging for a spell (called by hold callback)
+     */
+    function startChargingForSpell(spell) {
+        if (chargeState) return; // Already charging
+
+        const overlay = createChargeOverlay();
+
+        // Position overlay near cursor or palette
+        if (cursorScreenPos) {
+            overlay.style.left = `${cursorScreenPos.x}px`;
+            overlay.style.top = `${cursorScreenPos.y + 30}px`;
+        } else if (paletteEl) {
+            const rect = paletteEl.getBoundingClientRect();
+            overlay.style.left = `${rect.left}px`;
+            overlay.style.top = `${rect.bottom + 8}px`;
+        }
+
+        // Set the key being charged
+        overlay.querySelector('.charge-key').textContent = spell.key;
+        overlay.querySelector('.charge-level-label').textContent = JUICE_LEVELS[0].name;
+        overlay.querySelector('.charge-bar-fill').style.width = '0%';
+
+        overlay.classList.add('visible');
+
+        chargeState = {
+            spell,
+            startTime: Date.now(),
+            animFrame: null
+        };
+    }
+
+    /**
+     * Update charging progress (called by hold callback)
+     */
+    function updateChargingProgress(elapsed) {
+        if (!chargeState) return;
+
+        const progress = Math.min(elapsed / MAX_CHARGE_TIME, 1);
+        const currentLevel = getJuiceLevelFromTime(elapsed);
+
+        // Update overlay
+        if (chargeOverlay) {
+            chargeOverlay.querySelector('.charge-bar-fill').style.width = `${progress * 100}%`;
+            chargeOverlay.querySelector('.charge-level-label').textContent = JUICE_LEVELS[currentLevel].name;
+        }
+
+        // Update palette segments
+        if (paletteEl) {
+            const segments = paletteEl.querySelectorAll('.juice-segment');
+            segments.forEach((seg, i) => {
+                seg.classList.toggle('active', i <= currentLevel);
+                seg.classList.toggle('charging', i === currentLevel && elapsed > 100);
+            });
+            const juiceLabel = paletteEl.querySelector('.juice-label');
+            if (juiceLabel) {
+                juiceLabel.textContent = JUICE_LEVELS[currentLevel].name;
+            }
+        }
+    }
+
+    /**
+     * Complete charging with the final duration (called by hold callback)
+     */
+    function completeChargingWithDuration(elapsed, spellId) {
+        // Calculate final juice level
+        const finalLevel = getJuiceLevelFromTime(elapsed);
+
+        // Hide overlay
+        if (chargeOverlay) {
+            chargeOverlay.classList.remove('visible');
+        }
+
+        // Set the juice level
+        juiceLevel = finalLevel;
+        localStorage.setItem('mrmd-juice-level', juiceLevel.toString());
+        updateJuiceIndicator();
+
+        // Clear charge state
+        chargeState = null;
+
+        // Find and check if spell needs prompt
+        const spell = AI_SPELLS.find(s => s.id === spellId);
+        if (spell?.needsPrompt) {
+            showPromptInput(spell);
+        }
+        // Note: The actual spell execution is handled by the KeybindingManager handler
     }
 
     // ===========================================================================

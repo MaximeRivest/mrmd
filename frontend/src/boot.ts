@@ -2,11 +2,13 @@
  * Atelier Boot - Application Entry Point
  *
  * This is the main entry point for the Atelier application.
- * It detects the mode (Study vs Codes) and loads the appropriate app.
+ * Single unified app with two interface modes based on URL/domain:
  *
- * Modes:
- * - Study (atelier.study): Writer mode - minimal chrome, focused on prose
- * - Codes (atelier.codes): Developer mode - full IDE with terminal, file tree
+ * - Study (atelier.study): Compact mode - minimal chrome, writer-focused
+ * - Codes (atelier.codes): Developer mode - full IDE with sidebar, terminal
+ *
+ * Both modes share the same codebase; only the default interface differs.
+ * Users can toggle between modes at runtime via the mode switcher.
  *
  * Detection order:
  * 1. ?mode=study or ?mode=codes URL parameter
@@ -74,21 +76,17 @@ function createServices(): Services {
 
 async function boot(): Promise<void> {
     const mode = detectMode();
-    console.log(`[Boot] Starting Atelier in ${mode === 'study' ? 'Study' : 'Codes'} mode...`);
+    const defaultInterface = mode === 'study' ? 'compact' : 'developer';
+    console.log(`[Boot] Starting Atelier (${mode} → ${defaultInterface} mode)...`);
 
     // Create services
     const services = createServices();
     console.log('[Boot] Services initialized');
 
-    // Load appropriate app
+    // Load unified app with appropriate default mode
     try {
-        if (mode === 'study') {
-            const app = await import('./apps/study/index');
-            await app.mount(services);
-        } else {
-            const app = await import('./apps/codes/index');
-            await app.mount(services);
-        }
+        const app = await import('./apps/codes/index');
+        await app.mount(services, { defaultMode: defaultInterface });
         console.log(`[Boot] ${mode === 'study' ? 'Study' : 'Codes'} mode ready`);
     } catch (err) {
         console.error('[Boot] Failed to load app:', err);

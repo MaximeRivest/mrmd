@@ -45,21 +45,43 @@ def main():
     pass
 
 
+def get_newest_mtime(directory, extensions):
+    """Get the newest modification time of files with given extensions in directory."""
+    from pathlib import Path
+    newest = 0
+    for ext in extensions:
+        for f in Path(directory).rglob(f"*{ext}"):
+            if f.is_file():
+                newest = max(newest, f.stat().st_mtime)
+    return newest
+
+
 def ensure_editor_browser_bundle():
-    """Build the browser bundle if it doesn't exist."""
+    """Build the browser bundle if sources are newer than output."""
     import subprocess
     from pathlib import Path
 
-    # Find editor directory
     pkg_dir = Path(__file__).parent.parent.parent.parent
     editor_dir = pkg_dir / "editor"
     browser_bundle = editor_dir / "dist" / "index.browser.js"
 
-    if browser_bundle.exists():
-        return  # Already built
-
     if not (editor_dir / "package.json").exists():
         return  # Not in dev environment
+
+    needs_build = False
+    if not browser_bundle.exists():
+        needs_build = True
+    else:
+        # Check if any source is newer than output
+        src_dir = editor_dir / "src"
+        if src_dir.exists():
+            src_mtime = get_newest_mtime(src_dir, [".ts", ".tsx"])
+            bundle_mtime = browser_bundle.stat().st_mtime
+            if src_mtime > bundle_mtime:
+                needs_build = True
+
+    if not needs_build:
+        return
 
     click.echo("  [Editor] Building browser bundle...")
     try:
@@ -77,6 +99,50 @@ def ensure_editor_browser_bundle():
         click.echo("  [Editor] pnpm not found, skipping browser bundle build", err=True)
 
 
+def ensure_frontend_bundle():
+    """Build the frontend boot.js if sources are newer than output."""
+    import subprocess
+    from pathlib import Path
+
+    pkg_dir = Path(__file__).parent.parent.parent.parent
+    frontend_dir = pkg_dir / "frontend"
+    boot_js = frontend_dir / "src" / "boot.js"
+    build_script = frontend_dir / "build.cjs"
+
+    if not build_script.exists():
+        return  # Not in dev environment
+
+    needs_build = False
+    if not boot_js.exists():
+        needs_build = True
+    else:
+        # Check if any TypeScript source is newer than boot.js
+        src_dir = frontend_dir / "src"
+        if src_dir.exists():
+            src_mtime = get_newest_mtime(src_dir, [".ts", ".tsx"])
+            boot_mtime = boot_js.stat().st_mtime
+            if src_mtime > boot_mtime:
+                needs_build = True
+
+    if not needs_build:
+        return
+
+    click.echo("  [Frontend] Building boot.js bundle...")
+    try:
+        result = subprocess.run(
+            ["node", "build.cjs"],
+            cwd=frontend_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            click.echo("  [Frontend] boot.js built successfully")
+        else:
+            click.echo(f"  [Frontend] Build failed: {result.stderr}", err=True)
+    except FileNotFoundError:
+        click.echo("  [Frontend] node not found, skipping frontend build", err=True)
+
+
 @main.command()
 @click.option("--port", "-p", default=51789, help="Port to listen on")
 @click.option("--host", "-h", default="localhost", help="Host to bind to")
@@ -85,6 +151,7 @@ def ensure_editor_browser_bundle():
 def serve(port: int, host: str, ai_port: int, no_ai: bool):
     """Start the mrmd server."""
     ensure_editor_browser_bundle()
+    ensure_frontend_bundle()
     from ..server.app import run_server
     run_server(host=host, port=port, ai_port=ai_port, start_ai=not no_ai)
 

@@ -194,3 +194,17 @@ A collection of 50 markdown features, each in its own file.
 
 49. [Alerts/Admonitions](./49-alerts-admonitions.md)
 50. [Raw URLs](./50-raw-urls.md)
+
+
+```python
+import sys; sys.executable
+```
+```output:exec-1766585782283-76e9d
+'/home/maxime/Projects/mrmd/.venv/bin/python'
+```
+
+```python
+
+```
+
+

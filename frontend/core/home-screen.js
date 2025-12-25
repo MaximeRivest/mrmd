@@ -314,12 +314,19 @@ function renderNotebooks() {
         </div>
     `;
 
-    // Add click handlers
+    // Add click handlers (with guard against double-clicks)
+    let isOpening = false;
     container.querySelectorAll('.home-notebook').forEach(card => {
         card.addEventListener('click', () => {
+            if (isOpening) return;
+            isOpening = true;
+
             const path = card.dataset.path;
             const projectPath = card.dataset.projectPath;
             openNotebook(path, projectPath);
+
+            // Reset after a delay
+            setTimeout(() => { isOpening = false; }, 500);
         });
     });
 }
@@ -421,34 +428,56 @@ async function createNewFile(path, projectPath = null) {
 /**
  * Open a notebook file, switching projects if needed
  * @param {string} path - Full path to the notebook file
- * @param {string} projectPath - Path to the notebook's project (optional)
+ * @param {string} projectPath - Path to the notebook's project (optional, will detect if not provided)
  */
 async function openNotebook(path, projectPath = null) {
     // Hide home screen immediately
     hide();
 
+    // FAST PATH: Open the file immediately for instant feedback
+    // Don't wait for project detection - user sees content right away
+    SessionState.emit('file-switch-requested', { path });
+
     const currentProject = SessionState.getCurrentProject();
-    const needsProjectSwitch = projectPath && projectPath !== currentProject?.path;
+
+    // If no projectPath provided, detect the project from the file path (in background)
+    let detectedProjectPath = projectPath;
+    if (!detectedProjectPath) {
+        try {
+            const detected = await SessionState.detectProject(path);
+            if (detected?.project_root) {
+                detectedProjectPath = detected.project_root;
+                console.log('[HomeScreen] Detected project from path:', detectedProjectPath);
+            }
+        } catch (err) {
+            console.warn('[HomeScreen] Failed to detect project:', err);
+        }
+    }
+
+    const needsProjectSwitch = detectedProjectPath && detectedProjectPath !== currentProject?.path;
 
     if (needsProjectSwitch) {
-        // Switch to the notebook's project first, then open the file
-        // The project-opened handler will restore tabs, but we want this specific file
-        console.log('[HomeScreen] Switching project for notebook:', projectPath, '->', path);
+        // Switch project in background - file is already open, this just sets up the venv
+        console.log('[HomeScreen] Switching project in background:', detectedProjectPath);
 
-        // Open project with a hint to open this specific file after
-        const result = await SessionState.openProject(projectPath, true, {
-            openFileAfter: path,  // Tell project-opened handler to open this file
+        // Emit that kernel is initializing so UI can show status
+        SessionState.emit('kernel-initializing', {
+            projectPath: detectedProjectPath,
+            message: 'Switching to project environment...'
         });
 
-        if (!result.success) {
-            console.warn('[HomeScreen] Failed to switch project:', result.message);
-            // Fall back to just opening the file in current project
-            SessionState.emit('file-switch-requested', { path });
-        }
-        // If successful, the project-opened handler will open the file
-    } else {
-        // Same project or no project info - just open the file
-        SessionState.emit('file-switch-requested', { path });
+        // Don't pass openFileAfter since we already opened the file
+        SessionState.openProject(detectedProjectPath, true, {
+            skipFileOpen: true,  // We already opened the file
+        }).then(result => {
+            if (!result.success) {
+                console.warn('[HomeScreen] Project switch failed:', result.message);
+            }
+            // kernel-ready event is emitted by openProject when venv is configured
+        }).catch(err => {
+            console.error('[HomeScreen] Project switch error:', err);
+            SessionState.emit('kernel-error', { error: err.message });
+        });
     }
 }
 
@@ -610,13 +639,13 @@ export function show() {
 
 /**
  * Check if a filename looks like an untitled/default name
+ * Matches: untitled.md, Untitled-123.md, Untitled-1703345678901.md, untitled1.md
  */
 function isUntitledFilename(filename) {
     if (!filename) return false;
     const lower = filename.toLowerCase();
-    return lower === 'untitled.md' ||
-           lower.startsWith('untitled-') ||
-           /^untitled\d*\.md$/.test(lower);
+    // Match: untitled.md, untitled123.md, untitled-123.md, untitled-timestamp.md
+    return /^untitled(-?\d*)\.md$/.test(lower);
 }
 
 /**

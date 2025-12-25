@@ -9,19 +9,14 @@
  * - commands: Search commands
  * - projects: Switch projects
  *
- * Keyboard shortcuts:
- * - Cmd+P / Ctrl+P: Open in files mode
- * - Cmd+Shift+P / Ctrl+Shift+P: Open in commands mode
- * - Cmd+O / Ctrl+O: Open in browse mode
+ * Keybindings are defined centrally in keybindings.js
  */
 
 import * as SessionState from './session-state.js';
 import { createFileBrowser, fuzzyMatch, highlightMatches, getFileIcon, esc } from './file-browser.js';
 import { grepSearch } from './grep-search.js';
-
-// Detect platform for keyboard shortcut display
-const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
-const modKey = isMac ? 'Cmd' : 'Ctrl';
+import { KeybindingManager } from './keybinding-manager.js';
+import { MOD_KEY_TEXT as modKey, getBindingDisplayString } from './keybindings.js';
 
 let overlayEl = null;
 let isOpen = false;
@@ -175,8 +170,8 @@ export function createQuickPicker(options = {}) {
     // Create file browser for browse mode
     fileBrowserContainerEl = overlayEl.querySelector('#quick-picker-browser');
 
-    // Global keyboard shortcut - use capture phase to intercept before browser defaults
-    document.addEventListener('keydown', handleGlobalKeydown, true);
+    // Register keybinding handlers and context providers
+    registerQuickPickerKeybindings();
 
     return overlayEl;
 }
@@ -213,110 +208,121 @@ function setupEventListeners(options) {
 
 /**
  * Handle input keydown
+ * Note: Most navigation keys are now handled by KeybindingManager
+ * This handler is kept for any picker-specific behavior not in the central config
  */
 function handleInputKeydown(e) {
-    const listEl = overlayEl.querySelector('#quick-picker-list');
+    // KeybindingManager handles: Escape, Enter, Ctrl+Enter, Arrow keys, Tab, Backspace (in browse)
+    // We only need to handle things specific to the input that aren't in the central config
+    // Currently, all navigation is handled centrally, so this is a no-op placeholder
+}
 
-    if (e.key === 'Escape') {
-        e.preventDefault();
+/**
+ * Register keybinding handlers and context providers with KeybindingManager
+ */
+function registerQuickPickerKeybindings() {
+    // Register context providers
+    KeybindingManager.registerContext('quick-picker', () => isOpen);
+    KeybindingManager.registerContext('quick-picker-browse-mode', () => currentMode === 'browse');
+    KeybindingManager.registerContext('quick-picker-input-empty', () => {
+        const input = overlayEl?.querySelector('.quick-picker-input');
+        return input && !input.value;
+    });
+
+    // Global shortcuts to open quick picker modes
+    KeybindingManager.handle('nav:quick-open-commands', () => {
+        if (isOpen && currentMode === 'commands') {
+            close();
+        } else {
+            open({ mode: 'commands' });
+        }
+    });
+
+    KeybindingManager.handle('nav:browse', () => {
+        if (isOpen && currentMode === 'browse') {
+            close();
+        } else {
+            open({ mode: 'browse' });
+        }
+    });
+
+    KeybindingManager.handle('nav:search-content', () => {
+        if (isOpen && currentMode === 'content') {
+            close();
+        } else {
+            open({ mode: 'content' });
+        }
+    });
+
+    // Picker-internal navigation (only when picker is open)
+    KeybindingManager.handle('picker:close', () => {
         close();
-        return;
-    }
+    });
 
-    // Ctrl+Enter in browse mode - open as project (check BEFORE regular Enter)
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && currentMode === 'browse') {
-        e.preventDefault();
+    KeybindingManager.handle('picker:select', () => {
+        selectCurrentItem();
+    });
+
+    KeybindingManager.handle('picker:open-project', () => {
         if (fileBrowser && onOpenProject) {
             const currentPath = fileBrowser.getCurrentPath();
             close();
             onOpenProject(currentPath);
         }
-        return;
-    }
+    });
 
-    if (e.key === 'Enter') {
-        e.preventDefault();
-        selectCurrentItem();
-        return;
-    }
-
-    if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        moveSelection(1);
-        return;
-    }
-
-    if (e.key === 'ArrowUp') {
-        e.preventDefault();
+    KeybindingManager.handle('picker:navigate-up', () => {
         moveSelection(-1);
-        return;
-    }
+    });
 
-    // Tab to switch modes
-    if (e.key === 'Tab') {
-        e.preventDefault();
+    KeybindingManager.handle('picker:navigate-down', () => {
+        moveSelection(1);
+    });
+
+    KeybindingManager.handle('picker:next-mode', () => {
         const modes = Object.keys(MODES);
         const currentIndex = modes.indexOf(currentMode);
-        const nextIndex = e.shiftKey
-            ? (currentIndex - 1 + modes.length) % modes.length
-            : (currentIndex + 1) % modes.length;
+        const nextIndex = (currentIndex + 1) % modes.length;
         setMode(modes[nextIndex]);
-    }
+    });
 
-    // Backspace on empty input in browse mode - go up
-    if (e.key === 'Backspace' && currentMode === 'browse') {
-        const input = overlayEl.querySelector('.quick-picker-input');
-        if (!input.value && fileBrowser) {
+    KeybindingManager.handle('picker:prev-mode', () => {
+        const modes = Object.keys(MODES);
+        const currentIndex = modes.indexOf(currentMode);
+        const prevIndex = (currentIndex - 1 + modes.length) % modes.length;
+        setMode(modes[prevIndex]);
+    });
+
+    KeybindingManager.handle('picker:go-up', () => {
+        if (fileBrowser) {
             const currentPath = fileBrowser.getCurrentPath();
             const parentPath = currentPath.substring(0, currentPath.lastIndexOf('/')) || '/';
             if (parentPath !== currentPath) {
                 fileBrowser.loadDirectory(parentPath);
             }
         }
-    }
+    });
 }
 
 /**
- * Handle global keyboard shortcuts
- * Note: Ctrl+P is now handled by compact-mode.js to open the Project Explorer
- * Quick picker shortcuts only handle Ctrl+Shift+P for commands
+ * Unregister keybinding handlers
  */
-function handleGlobalKeydown(e) {
-    // Cmd+P / Ctrl+P - now handled by compact-mode.js (opens Project Explorer)
-    // Don't handle here to avoid conflicts
+function unregisterQuickPickerKeybindings() {
+    KeybindingManager.unregisterContext('quick-picker');
+    KeybindingManager.unregisterContext('quick-picker-browse-mode');
+    KeybindingManager.unregisterContext('quick-picker-input-empty');
 
-    // Cmd+Shift+P / Ctrl+Shift+P - commands
-    if ((e.metaKey || e.ctrlKey) && e.key === 'p' && e.shiftKey) {
-        e.preventDefault();
-        if (isOpen && currentMode === 'commands') {
-            close();
-        } else {
-            open({ mode: 'commands' });
-        }
-        return;
-    }
-
-    // Cmd+O / Ctrl+O - browse
-    if ((e.metaKey || e.ctrlKey) && e.key === 'o' && !e.shiftKey) {
-        e.preventDefault();
-        if (isOpen && currentMode === 'browse') {
-            close();
-        } else {
-            open({ mode: 'browse' });
-        }
-        return;
-    }
-
-    // Cmd+Shift+F / Ctrl+Shift+F - content search
-    if ((e.metaKey || e.ctrlKey) && e.key === 'f' && e.shiftKey) {
-        e.preventDefault();
-        if (isOpen && currentMode === 'content') {
-            close();
-        } else {
-            open({ mode: 'content' });
-        }
-        return;
-    }
+    KeybindingManager.unhandle('nav:quick-open-commands');
+    KeybindingManager.unhandle('nav:browse');
+    KeybindingManager.unhandle('nav:search-content');
+    KeybindingManager.unhandle('picker:close');
+    KeybindingManager.unhandle('picker:select');
+    KeybindingManager.unhandle('picker:open-project');
+    KeybindingManager.unhandle('picker:navigate-up');
+    KeybindingManager.unhandle('picker:navigate-down');
+    KeybindingManager.unhandle('picker:next-mode');
+    KeybindingManager.unhandle('picker:prev-mode');
+    KeybindingManager.unhandle('picker:go-up');
 }
 
 /**
@@ -1262,7 +1268,8 @@ export function getElement() {
  * Destroy the quick picker
  */
 export function destroy() {
-    document.removeEventListener('keydown', handleGlobalKeydown, true);
+    // Unregister keybinding handlers
+    unregisterQuickPickerKeybindings();
 
     if (fileBrowser) {
         fileBrowser.destroy();

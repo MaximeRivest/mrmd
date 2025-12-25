@@ -583,6 +583,7 @@ export class AiClient {
      * @param {function} options.onStatus - Called with status updates { step, model, ... }
      * @param {function} options.onModelStart - Called when a model starts (ultimate mode)
      * @param {function} options.onModelComplete - Called when a model completes (ultimate mode)
+     * @param {function} options.onContentChunk - Called with content chunks during streaming (when backend supports it)
      * @param {function} options.onError - Called on error
      * @returns {Promise<object>} The final result
      */
@@ -591,6 +592,7 @@ export class AiClient {
         const onStatus = options.onStatus || (() => {});
         const onModelStart = options.onModelStart || (() => {});
         const onModelComplete = options.onModelComplete || (() => {});
+        const onContentChunk = options.onContentChunk || (() => {});
         const onError = options.onError || (() => {});
 
         // Truncate base64 data in context fields to reduce token usage
@@ -648,6 +650,11 @@ export class AiClient {
                                 break;
                             case 'model_complete':
                                 onModelComplete(data);
+                                break;
+                            case 'content_chunk':
+                                // Content streaming - when backend supports it
+                                // data: { chunk: "partial content", field: "completion" }
+                                onContentChunk(data);
                                 break;
                             case 'result':
                                 result = data;

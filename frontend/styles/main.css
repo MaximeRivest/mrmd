@@ -1913,97 +1913,6 @@ body {
     opacity: 0.6;
 }
 
-/* Variable items */
-.env-var {
-    display: flex;
-    align-items: flex-start;
-    padding: 5px 8px;
-    margin: 1px 0;
-    font-size: 11px;
-    cursor: default;
-    border-radius: 4px;
-    transition: background 0.1s ease;
-}
-.env-var:hover {
-    background: rgba(255, 255, 255, 0.04);
-}
-.env-var.expandable {
-    cursor: pointer;
-}
-.env-var-expand {
-    width: 14px;
-    height: 14px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--muted);
-    font-size: 9px;
-    flex-shrink: 0;
-    margin-right: 4px;
-    user-select: none;
-    opacity: 0.5;
-}
-.env-var-expand:empty {
-    width: 14px;
-}
-.env-var.expanded > .env-var-expand {
-    transform: rotate(90deg);
-}
-.env-var-name {
-    font-family: 'SF Mono', Monaco, monospace;
-    color: var(--text);
-    flex-shrink: 0;
-    margin-right: 6px;
-}
-.env-var-type {
-    color: var(--muted);
-    font-size: 10px;
-    margin-right: 6px;
-    flex-shrink: 0;
-}
-.env-var-preview {
-    color: var(--muted);
-    font-family: 'SF Mono', Monaco, monospace;
-    font-size: 11px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1;
-}
-.env-var-members {
-    color: var(--accent);
-    font-size: 10px;
-    margin-left: auto;
-    flex-shrink: 0;
-}
-
-/* Kind-based colors */
-.env-var[data-kind="primitive"] { border-left-color: #6b7280; }
-.env-var[data-kind="collection"] { border-left-color: #8b5cf6; }
-.env-var[data-kind="object"] { border-left-color: #f59e0b; }
-.env-var[data-kind="callable"] { border-left-color: #10b981; }
-.env-var[data-kind="class"] { border-left-color: #ec4899; }
-.env-var[data-kind="data"] { border-left-color: #3b82f6; }
-
-/* Nested children */
-.env-var-children {
-    display: none;
-    padding-left: 16px;
-}
-.env-var.expanded + .env-var-children {
-    display: block;
-}
-
-/* Dark mode adjustments */
-@media (prefers-color-scheme: dark) {
-    .env-var[data-kind="primitive"] { border-left-color: #9ca3af; }
-    .env-var[data-kind="collection"] { border-left-color: #a78bfa; }
-    .env-var[data-kind="object"] { border-left-color: #fbbf24; }
-    .env-var[data-kind="callable"] { border-left-color: #34d399; }
-    .env-var[data-kind="class"] { border-left-color: #f472b6; }
-    .env-var[data-kind="data"] { border-left-color: #60a5fa; }
-}
-
 /* ==================== Rich Editor ==================== */
 /* Contenteditable-based editor with rendered HTML and edit-on-click */
 /* Design: Matches the blue-accented, centered overlay editor style */
@@ -4708,6 +4617,16 @@ html, body {
     background: var(--muted);
 }
 
+/* Editor content - centered with generous margins */
+.editor-container .cm-editor {
+    max-width: 850px;
+    margin: 0 auto;
+}
+
+.editor-container .cm-scroller {
+    padding: 48px 32px;
+}
+
 /* ============================================================================
  * SIDEBAR STYLES
  * ============================================================================ */
@@ -4923,6 +4842,17 @@ html, body {
 .status-bar .exec-status.error {
     color: #e07;
     font-style: normal;
+}
+
+.status-bar .exec-status.kernel-switching {
+    color: #f0a030;
+    font-style: normal;
+    animation: pulse-status 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-status {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
 }
 
 /* Status bar badges */
@@ -5652,10 +5582,19 @@ html, body {
 
 /* --- Compact Floating UI (No Header Bar) --- */
 
-/* Compact mode: scrollbar on opposite side of rail */
+/* Compact mode: centered document with generous whitespace */
 .compact-mode .editor-container {
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
+}
+
+/* Compact mode: tighter width for focused writing */
+.compact-mode .editor-container .cm-editor {
+    max-width: 780px;
+}
+
+.compact-mode .editor-container .cm-scroller {
+    padding: 56px 24px;
 }
 
 /* Rail on right = scrollbar on left */
@@ -6328,7 +6267,7 @@ html, body {
 }
 
 .compact-mode .compact-status-bar {
-    display: none;
+    display: flex;
 }
 
 .compact-mode .status-bar {

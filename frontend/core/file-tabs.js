@@ -442,7 +442,66 @@ export function createFileTabs(options = {}) {
     renderTabs(tabsContainer, openFiles, activeFilePath, { onTabSelect, onTabClose, showContextMenu });
     updateVisibility(container, openFiles, projectEl, addBtn);
 
-    return container;
+    // Return API object for programmatic control
+    return {
+        /** The DOM container element */
+        element: container,
+
+        /**
+         * Add a tab for a file (uses SessionState internally)
+         * @param {string} path - File path
+         * @param {string} _filename - Filename (unused, extracted from path)
+         * @param {boolean} modified - Whether file is modified
+         */
+        addTab(path, _filename, modified = false) {
+            // SessionState handles the tab rendering via events
+            SessionState.addOpenFile(path, '', modified);
+        },
+
+        /**
+         * Remove a tab
+         * @param {string} path - File path
+         */
+        removeTab(path) {
+            SessionState.removeOpenFile(path);
+        },
+
+        /**
+         * Set the active tab
+         * @param {string} path - File path
+         */
+        setActiveTab(path) {
+            SessionState.setActiveFile(path);
+        },
+
+        /**
+         * Update tab modified state
+         * @param {string} path - File path
+         * @param {boolean} modified - Whether file is modified
+         */
+        updateTabModified(path, modified) {
+            // Use updateFileContent to set modified state (doesn't change content)
+            const file = SessionState.getOpenFiles().get(path);
+            if (file) {
+                SessionState.updateFileContent(path, file.content || '', modified);
+            }
+        },
+
+        /**
+         * Rename a tab (close old, open new)
+         * @param {string} oldPath - Old file path
+         * @param {string} newPath - New file path
+         * @param {string} _newFilename - New filename (unused)
+         */
+        renameTab(oldPath, newPath, _newFilename) {
+            const fileState = SessionState.getOpenFiles().get(oldPath);
+            if (fileState) {
+                SessionState.removeOpenFile(oldPath);
+                SessionState.addOpenFile(newPath, fileState.content || '', fileState.modified || false);
+                SessionState.setActiveFile(newPath);
+            }
+        },
+    };
 }
 
 function renderTabs(container, openFiles, activeFilePath, options) {

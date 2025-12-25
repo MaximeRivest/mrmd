@@ -13,6 +13,9 @@ let onClose = null;
 // Panel content generators
 const panelContent = new Map();
 
+// Cache for panel elements (preserves JS bindings when switching panels)
+const elementCache = new Map();
+
 /**
  * Create the tool panel container
  * @param {Object} options
@@ -101,16 +104,26 @@ export function open(panelId) {
 
     // Update content
     if (contentEl) {
+        // Save current element before clearing (so it can be reused)
+        const currentChild = contentEl.querySelector(':scope > *');
+        if (currentChild && currentChild._panelId) {
+            elementCache.set(currentChild._panelId, currentChild);
+        }
         contentEl.innerHTML = '';
 
-        let content = panelInfo.content;
-        if (typeof content === 'function') {
-            content = content();
+        // Check cache first for this panel
+        let content = elementCache.get(panelId);
+        if (!content) {
+            content = panelInfo.content;
+            if (typeof content === 'function') {
+                content = content();
+            }
         }
 
         if (typeof content === 'string') {
             contentEl.innerHTML = content;
         } else if (content instanceof HTMLElement) {
+            content._panelId = panelId;  // Tag for caching
             contentEl.appendChild(content);
         }
     }

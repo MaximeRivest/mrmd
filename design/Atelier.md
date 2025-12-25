@@ -268,13 +268,24 @@ Three layers, each with clear responsibility:
 │              ATELIER (SaaS Shell) - frontend/                │
 │                                                              │
 │  The application layer. Sessions, projects, AI assistant,   │
-│  mode switching. This is where Study and Codes diverge.     │
+│  interface mode switching.                                   │
 │                                                              │
-│  ┌──────────────────────┐  ┌──────────────────────┐         │
-│  │    apps/study/       │  │    apps/codes/       │         │
-│  │    Writer Mode       │  │    Developer Mode    │         │
-│  └──────────┬───────────┘  └──────────┬───────────┘         │
-│             └──────────────┬──────────┘                     │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │                  apps/codes/index.ts                    │ │
+│  │                  (Unified Entry Point)                  │ │
+│  │                                                         │ │
+│  │  mount(services, { defaultMode: 'compact' })  // Study  │ │
+│  │  mount(services, { defaultMode: 'developer' }) // Codes │ │
+│  └─────────────────────────┬──────────────────────────────┘ │
+│                            ▼                                │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │              InterfaceManager + UI Modules              │ │
+│  │                                                         │ │
+│  │  Compact Mode:   Tool rail, panels, minimal chrome     │ │
+│  │  Developer Mode: Sidebar, file tabs, terminal          │ │
+│  │                                                         │ │
+│  │  Users can toggle between modes at runtime             │ │
+│  └─────────────────────────┬──────────────────────────────┘ │
 │                            ▼                                │
 │             ┌──────────────────────────┐                    │
 │             │     Service Layer        │                    │
@@ -310,22 +321,33 @@ Three layers, each with clear responsibility:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Current State vs Target State
+### Current State
 
 **What's Done:**
 - `@mrmd/editor`: CM6 package with widgets, execution, Yjs, locks
 - Python backend: Execution, files, Yjs management, history
 - Legacy cleanup: ~48,000 lines removed
+- Unified application: Single entry point with interface mode option
+- Service layer: Document, Execution, Collaboration services
+- Interface modes: Compact (Study) and Developer (Codes) with runtime toggle
 
-**What Needs Redesign:**
+**Architecture:**
 
-| Component | Current | Target |
-|-----------|---------|--------|
-| `frontend/web/index.html` | 5,000+ line monolith with inline JS | Clean entry point that boots a TypeScript app |
-| `EditorBridge` | Adapter with backward-compat shims | Clean service layer (Document, Execution, Collaboration) |
-| Application structure | Single mode | Two apps (Study, Codes) with shared services |
+```
+boot.ts
+  │
+  └─► detectMode() → 'study' or 'codes'
+        │
+        └─► apps/codes/index.ts
+              │
+              └─► mount(services, { defaultMode: 'compact' | 'developer' })
+                    │
+                    ├─► InterfaceManager (handles mode switching)
+                    ├─► UI Modules (compact-mode.js, tool-panel.js, etc.)
+                    └─► Service Layer (Document, Execution, Collaboration)
+```
 
-**Target Service Layer:**
+**Service Layer:**
 
 ```
 ┌─────────────────┬─────────────────┬─────────────────────────┐
@@ -335,8 +357,6 @@ Three layers, each with clear responsibility:
 │ - undo/redo     │ - output stream │ - file watching         │
 └─────────────────┴─────────────────┴─────────────────────────┘
 ```
-
-No shims. No backward compatibility. Clean interfaces designed for what Study/Codes actually need.
 
 ---
 
@@ -352,11 +372,19 @@ mrmd/
 │       └── widgets/        # Image, math, HTML, run buttons
 │
 ├── frontend/               # Atelier application
-│   ├── src/                # Target structure (planned)
-│   │   ├── apps/study/     # Writer mode entry point
-│   │   ├── apps/codes/     # Developer mode entry point
+│   ├── src/
+│   │   ├── boot.ts         # Entry point - detects mode, loads app
+│   │   ├── apps/
+│   │   │   ├── codes/      # Unified app (Study + Codes)
+│   │   │   │   ├── index.ts          # mount(services, {defaultMode})
+│   │   │   │   └── InterfaceManager.ts
+│   │   │   └── shared/     # AppState, types, utilities
 │   │   └── services/       # Document, Execution, Collaboration
-│   ├── core/               # Current JS modules (legacy)
+│   ├── core/               # UI modules (JS - will migrate to TS)
+│   │   ├── compact-mode.js # Compact UI orchestrator
+│   │   ├── tool-panel.js   # Slide-out panels
+│   │   ├── session-state.js # Event-driven state
+│   │   └── ...
 │   └── web/                # HTML entry points
 │
 ├── src/mrmd/               # Python engine
@@ -375,16 +403,17 @@ mrmd/
 
 ## Part 6: Next Steps
 
-These are the commits that move us from current state to target state:
+**Completed:**
+- ✓ Extracted inline JS from `index.html` into TypeScript modules
+- ✓ Created unified entry point with interface mode option
+- ✓ Domain detection routes to appropriate default mode
+- ✓ Service layer (Document, Execution, Collaboration)
 
-### Commit 2: Single Entry Module
-Extract the 5,000 lines of inline JS from `index.html` into a proper TypeScript module. Keep behavior identical. This breaks the monolith without changing the product.
-
-### Commit 3: Two Front Doors
-Add the Study/Codes split. A bootloader detects the domain and loads the right app. Both apps share the service layer.
-
-### Commit 4: Service Layer
-Replace EditorBridge with clean services. Design interfaces for what the apps actually need, not for backward compatibility.
+**Remaining:**
+- Migrate remaining `/core/*.js` modules to TypeScript
+- Clean up CSS (some selectors have issues)
+- Improve interface mode transitions (animations, state persistence)
+- Add user preference storage for interface mode
 
 ---
 
@@ -454,4 +483,4 @@ uv run mrmd serve
 
 *This is the north star. When in doubt, check here first.*
 
-*Last updated: December 2024*
+*Last updated: December 24, 2024*

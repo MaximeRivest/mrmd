@@ -1019,6 +1019,10 @@ export function createFileBrowser(container, options = {}) {
         },
         getActiveFile: () => activeFilePath,
         refresh: () => loadDirectory(currentPath),
+        setRoot: (path) => {
+            currentPath = path;
+            loadDirectory(path);
+        },
         handleKeydown,
         destroy: () => {
             // Cleanup: unwatch directory

@@ -343,40 +343,45 @@ class StreamingDecorations {
     const builder = new RangeSetBuilder<Decoration>();
     const { overlays } = view.state.field(streamingField);
 
-    // Collect and sort by position
-    const sorted = Array.from(overlays.values()).sort((a, b) => a.anchorPos - b.anchorPos);
+    // Collect all decorations with their positions, then sort
+    const decorations: Array<{ from: number; to: number; decoration: Decoration }> = [];
 
-    for (const overlay of sorted) {
-      // Add widget after anchor position
-      builder.add(
-        overlay.anchorPos,
-        overlay.anchorPos,
-        Decoration.widget({
+    for (const overlay of overlays.values()) {
+      // Widget decoration (inline, not block - block decorations can't be added via plugins)
+      decorations.push({
+        from: overlay.anchorPos,
+        to: overlay.anchorPos,
+        decoration: Decoration.widget({
           widget: new StreamingWidget(overlay),
           side: 1, // After the position
-          block: true,
-        })
-      );
+        }),
+      });
 
-      // If replacing, add background to the range being replaced
+      // Mark decoration for replace range
       if (overlay.anchorType === 'replace' && overlay.replaceFrom !== undefined && overlay.replaceTo !== undefined) {
-        // Mark the range being replaced
         const from = Math.min(overlay.replaceFrom, view.state.doc.length);
         const to = Math.min(overlay.replaceTo, view.state.doc.length);
 
         if (from < to) {
-          builder.add(
+          decorations.push({
             from,
             to,
-            Decoration.mark({
+            decoration: Decoration.mark({
               class: 'cm-streaming-replace-range',
               attributes: {
                 style: `--stream-color: ${overlay.owner.userColor}`,
               },
-            })
-          );
+            }),
+          });
         }
       }
+    }
+
+    // Sort by from position (required by RangeSetBuilder)
+    decorations.sort((a, b) => a.from - b.from || a.to - b.to);
+
+    for (const { from, to, decoration } of decorations) {
+      builder.add(from, to, decoration);
     }
 
     return builder.finish();

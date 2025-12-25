@@ -15,6 +15,7 @@ import * as AIPanel from './ai-panel.js';
 import * as TerminalOverlay from './terminal-overlay.js';
 import * as MobileNav from './mobile-nav.js';
 import * as CompactStatus from './compact-status.js';
+import * as DeveloperStatus from './developer-status.js';
 import * as HomeScreen from './home-screen.js';
 import * as QuickPicker from './quick-picker.js';
 import * as ClaudePanel from './claude-panel.js';
@@ -22,6 +23,8 @@ import * as PortalScreen from './portal-screen.js';
 import * as ProjectExplorer from './project-explorer.js';
 import * as TOCPanel from './toc-panel.js';
 import * as InlineTOC from './inline-toc.js';
+import { KeybindingManager } from './keybinding-manager.js';
+import { initEditorKeybindings } from './editor-keybindings.js';
 
 let initialized = false;
 let editorRef = null;
@@ -31,7 +34,8 @@ let editorRef = null;
  * @param {Object} options
  * @param {HTMLElement} options.container - Main container element
  * @param {HTMLElement} options.editorPane - Editor pane element
- * @param {Object} options.editor - Rich editor instance
+ * @param {Object} options.editor - Rich editor instance (deprecated, use getEditor)
+ * @param {Function} options.getEditor - Function that returns current editor instance
  * @param {Function} options.createTerminal - Terminal factory function
  * @param {Object} options.fileBrowser - File browser instance
  */
@@ -45,6 +49,7 @@ export function initCompactMode(options = {}) {
         container,
         editorPane,
         editor,
+        getEditor,
         createTerminal,
         fileBrowser
     } = options;
@@ -54,6 +59,8 @@ export function initCompactMode(options = {}) {
         return null;
     }
 
+    // Prefer getEditor function, fallback to static editor reference
+    const getEditorFn = getEditor || (() => editor);
     editorRef = editor;
 
     // Initialize mode controller
@@ -148,16 +155,16 @@ export function initCompactMode(options = {}) {
     });
 
     ToolPanel.registerPanel('variables', () => {
-        // Reuse existing variables panel content
-        const existingPanel = document.getElementById('variables-panel');
-        if (existingPanel) {
-            const content = existingPanel.querySelector('.env-pane');
-            if (content) {
-                const clone = content.cloneNode(true);
-                clone.style.display = 'block';
-                return clone;
-            }
+        // Get the actual variables panel (created by variables-panel.js)
+        // Check both the sidebar container AND the tool panel content (element gets moved)
+        let content = document.querySelector('#variables-panel .variables-panel')
+                   || document.querySelector('.tool-panel-content .variables-panel');
+
+        if (content) {
+            content.style.display = 'block';
+            return content;
         }
+
         const empty = document.createElement('div');
         empty.className = 'env-pane-empty';
         empty.textContent = 'Run code to see variables';
@@ -304,6 +311,10 @@ export function initCompactMode(options = {}) {
     // Create compact status bar
     const statusEl = CompactStatus.createCompactStatus();
 
+    // Initialize developer mode status bar (wires up session/venv badges in index.html)
+    // These elements are hidden in compact mode via CSS, but need JS wiring for developer mode
+    DeveloperStatus.initDeveloperStatus();
+
     // Create global Claude panel
     const claudePanelEl = ClaudePanel.createClaudePanel();
 
@@ -338,8 +349,8 @@ export function initCompactMode(options = {}) {
         CompactHeader.setMenuActive(true);
     }
 
-    // Register global keyboard shortcut for Ctrl+B / Cmd+B (browse project)
-    document.addEventListener('keydown', handleGlobalKeydown, true);
+    // Initialize keybinding manager and register handlers
+    initKeybindings(getEditorFn);
 
     initialized = true;
 
@@ -347,68 +358,56 @@ export function initCompactMode(options = {}) {
 }
 
 /**
- * Handle global keyboard shortcuts for compact mode
+ * Initialize keybindings for compact mode
+ * Registers handlers and context providers with the central KeybindingManager
+ * @param {Function} getEditor - Function that returns the current editor instance
  */
-function handleGlobalKeydown(e) {
-    // Only handle when in compact mode
-    if (SessionState.getInterfaceMode() !== 'compact') return;
+function initKeybindings(getEditor) {
+    // Initialize the manager (safe to call multiple times)
+    KeybindingManager.init();
 
-    // Check if focus is in the editor (for formatting shortcuts)
-    // .cm-editor is the CodeMirror 6 editor; include other editable nodes for safety.
-    const isInEditor = document.activeElement?.closest('.cm-editor, .code-block-editor, [contenteditable]');
+    // Register context providers
+    KeybindingManager.registerContext('editor', () => {
+        const active = document.activeElement;
+        return !!active?.closest('.cm-editor, .code-block-editor, [contenteditable="true"]');
+    });
 
-    // Cmd+B / Ctrl+B - Bold in editor, or browse project if not in editor
-    if ((e.metaKey || e.ctrlKey) && e.key === 'b' && !e.shiftKey) {
-        if (isInEditor) {
-            // Let the editor handle Ctrl+B for bold formatting
-            return;
-        }
+    KeybindingManager.registerContext('compact-mode', () => {
+        return SessionState.getInterfaceMode() === 'compact';
+    });
 
-        e.preventDefault();
-        e.stopPropagation();
+    // Initialize editor keybindings (code execution: Ctrl+Enter, Shift+Enter, etc.)
+    if (getEditor) {
+        const statusEl = document.getElementById('exec-status') || document.querySelector('.compact-status');
+        initEditorKeybindings({ getEditor, statusEl });
+    }
+
+    // Handler for project explorer toggle
+    const toggleProjectExplorer = () => {
+        // Only handle when in compact mode
+        if (SessionState.getInterfaceMode() !== 'compact') return;
 
         const currentProject = SessionState.getCurrentProject();
         if (currentProject) {
-            // Toggle project explorer
             if (ProjectExplorer.isShown()) {
                 ProjectExplorer.close();
             } else {
                 ProjectExplorer.open(currentProject.path, currentProject.name);
             }
         } else {
-            // No project - show home screen to pick one
             HomeScreen.show();
         }
-        return;
-    }
+    };
 
-    // Cmd+P / Ctrl+P - Open project explorer (notebook browser)
-    if ((e.metaKey || e.ctrlKey) && e.key === 'p' && !e.shiftKey) {
-        e.preventDefault();
-        e.stopPropagation();
+    // Register handlers for navigation keybindings
+    KeybindingManager.handle('nav:project-explorer', toggleProjectExplorer);
+    KeybindingManager.handle('nav:project-explorer-alt', toggleProjectExplorer);
 
-        const currentProject = SessionState.getCurrentProject();
-        if (currentProject) {
-            // Toggle project explorer
-            if (ProjectExplorer.isShown()) {
-                ProjectExplorer.close();
-            } else {
-                ProjectExplorer.open(currentProject.path, currentProject.name);
-            }
-        } else {
-            // No project - show home screen to pick one
-            HomeScreen.show();
-        }
-        return;
-    }
-
-    // Cmd+Shift+O / Ctrl+Shift+O - Toggle Structure Mode (Inline TOC)
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'o' || e.key === 'O')) {
-        e.preventDefault();
-        e.stopPropagation();
+    // Toggle inline TOC
+    KeybindingManager.handle('nav:toggle-toc', () => {
+        if (SessionState.getInterfaceMode() !== 'compact') return;
         InlineTOC.toggle();
-        return;
-    }
+    });
 }
 
 /**
@@ -618,7 +617,12 @@ export function isInitialized() {
  * Destroy compact mode
  */
 export function destroyCompactMode() {
-    document.removeEventListener('keydown', handleGlobalKeydown, true);
+    // Unregister keybinding handlers
+    KeybindingManager.unhandle('nav:project-explorer');
+    KeybindingManager.unhandle('nav:project-explorer-alt');
+    KeybindingManager.unhandle('nav:toggle-toc');
+    KeybindingManager.unregisterContext('editor');
+    KeybindingManager.unregisterContext('compact-mode');
 
     PortalScreen.destroy?.();
     HomeScreen.destroy?.();
@@ -629,6 +633,7 @@ export function destroyCompactMode() {
     TerminalOverlay.destroy?.();
     MobileNav.destroy?.();
     CompactStatus.destroy?.();
+    DeveloperStatus.destroyDeveloperStatus?.();
     QuickPicker.destroy?.();
     ClaudePanel.destroy?.();
     InlineTOC.destroy?.();

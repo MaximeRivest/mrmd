@@ -14,6 +14,17 @@ SIRET: 123 456 789 00012
 **Validité:** 30 jours
 **Référence:** DEV-2025-0147
 
+```python
+import sys; sys.executable
+```
+```output:exec-1766585656261-p0rzs
+'/home/maxime/Projects/mrmd/.venv/bin/python'
+```
+
+```python
+
+```
+
 ---
 
 ## Description des travaux

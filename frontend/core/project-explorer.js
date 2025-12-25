@@ -402,14 +402,16 @@ function renderList() {
     // Click handlers
     listEl.querySelectorAll('.pe-item').forEach(el => {
         el.addEventListener('click', () => {
+            // Single click opens the file
+            close();
+            if (onSelect) onSelect(el.dataset.path, { projectPath: currentProject?.path || null });
+        });
+
+        // Hover to preview (since click now opens)
+        el.addEventListener('mouseenter', () => {
             listEl.querySelectorAll('.pe-item').forEach(i => i.classList.remove('selected'));
             el.classList.add('selected');
             updatePreview(el.dataset.path);
-        });
-
-        el.addEventListener('dblclick', () => {
-            close();
-            if (onSelect) onSelect(el.dataset.path, { projectPath: currentProject?.path || null });
         });
     });
 
@@ -510,12 +512,7 @@ function renderContentResults() {
     // Click handlers
     listEl.querySelectorAll('.pe-item').forEach(el => {
         el.addEventListener('click', () => {
-            listEl.querySelectorAll('.pe-item').forEach(i => i.classList.remove('selected'));
-            el.classList.add('selected');
-            updatePreview(el.dataset.path, parseInt(el.dataset.line));
-        });
-
-        el.addEventListener('dblclick', () => {
+            // Single click opens the file
             close();
             if (onSelect) {
                 onSelect(el.dataset.path, {
@@ -523,6 +520,13 @@ function renderContentResults() {
                     projectPath: currentProject?.path || null,
                 });
             }
+        });
+
+        // Hover to preview (since click now opens)
+        el.addEventListener('mouseenter', () => {
+            listEl.querySelectorAll('.pe-item').forEach(i => i.classList.remove('selected'));
+            el.classList.add('selected');
+            updatePreview(el.dataset.path, parseInt(el.dataset.line));
         });
     });
 
