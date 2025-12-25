@@ -1,0 +1,71 @@
+{
+  "name": "mrmd",
+  "version": "0.1.0",
+  "description": "MRMD - Markdown REPL for Data Science",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "NODE_ENV=development electron .",
+    "bundle-python": "bash scripts/bundle-python.sh",
+    "build": "npm run bundle-python && electron-builder",
+    "build:linux": "npm run bundle-python && electron-builder --linux",
+    "build:mac": "npm run bundle-python && electron-builder --mac",
+    "build:win": "npm run bundle-python && electron-builder --win",
+    "build:mac-quick": "electron-builder --mac"
+  },
+  "author": "Maxime",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^39.2.4",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.mrmd.desktop",
+    "productName": "MRMD",
+    "directories": {
+      "output": "dist"
+    },
+    "extraResources": [
+      {
+        "from": "bundled/python",
+        "to": "python",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "bundled/venv",
+        "to": "venv",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "bundled/src",
+        "to": "src",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "bundled/frontend",
+        "to": "frontend",
+        "filter": ["**/*"]
+      }
+    ],
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development"
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.developer-tools",
+      "icon": "icons/icon.icns",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": ["nsis", "portable"]
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "asar": false
+  }
+}

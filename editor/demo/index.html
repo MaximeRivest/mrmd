@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MRMD Editor Demo</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <style>
+    :root {
+      --bg: #faf9f7;
+      --bg-gradient: linear-gradient(180deg, #faf9f7 0%, #f5f3f0 100%);
+      --text: #37352f;
+      --text-muted: #9b9a97;
+      --text-light: #b4b4b0;
+      --accent: #6b7280;
+      --accent-soft: rgba(107, 114, 128, 0.12);
+      --surface: rgba(0, 0, 0, 0.03);
+      --surface-hover: rgba(0, 0, 0, 0.06);
+      --border: rgba(0, 0, 0, 0.08);
+      --marker: #bbb;
+      --selection: rgba(45, 170, 219, 0.2);
+      --code-bg: rgba(0, 0, 0, 0.04);
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #191919;
+        --bg-gradient: linear-gradient(180deg, #191919 0%, #1a1a1a 100%);
+        --text: #e0e0e0;
+        --text-muted: #6b6b6b;
+        --text-light: #4a4a4a;
+        --accent: #8b9298;
+        --accent-soft: rgba(139, 146, 152, 0.1);
+        --surface: rgba(255, 255, 255, 0.03);
+        --surface-hover: rgba(255, 255, 255, 0.06);
+        --border: rgba(255, 255, 255, 0.06);
+        --marker: #555;
+        --selection: rgba(45, 170, 219, 0.25);
+        --code-bg: rgba(255, 255, 255, 0.04);
+        --shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--bg);
+      background-image: var(--bg-gradient);
+      background-attachment: fixed;
+      color: var(--text);
+    }
+
+    body {
+      font-family: 'Charter', 'Bitstream Charter', 'Sitka Text', Cambria, Georgia, serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    #editor-container {
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 80px 32px 120px;
+      min-height: 100%;
+    }
+
+    .status-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: transparent;
+      padding: 12px 24px;
+      font-size: 11px;
+      color: var(--text-light);
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      display: flex;
+      justify-content: space-between;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      pointer-events: none;
+    }
+
+    body:hover .status-bar {
+      opacity: 1;
+    }
+
+    /* Remote cursor styles */
+    .cm-remote-cursor {
+      border-left: 2px solid;
+      margin-left: -1px;
+      position: relative;
+    }
+
+    .cm-remote-cursor-label {
+      position: absolute;
+      bottom: 100%;
+      left: -1px;
+      background: inherit;
+      color: white;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 3px 3px 3px 0;
+      white-space: nowrap;
+      pointer-events: none;
+      font-family: system-ui, sans-serif;
+      font-weight: 500;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+
+    .cm-remote-selection {
+      mix-blend-mode: multiply;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .cm-remote-selection {
+        mix-blend-mode: screen;
+      }
+    }
+
+    /* Loading state */
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    .loading::after {
+      content: '';
+      width: 16px;
+      height: 16px;
+      margin-left: 12px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+
+<div id="editor-container">
+  <div class="loading">Connecting to collaboration server</div>
+</div>
+
+<div class="status-bar">
+  <span id="cursor-info">Ln 1, Col 1</span>
+  <span id="collab-status">◌ Connecting...</span>
+  <span id="word-count">0 words</span>
+</div>
+
+<script type="module">
+import {
+  createCollaborativeEditor,
+  IPythonExecutor,
+  createMinimalIPythonClient,
+  MockExecutor,
+} from '../src/index.ts';
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+const COLLAB_URL = `ws://${location.hostname}:1234`;
+const ROOM_ID = 'demo-unified-v2';  // Fresh room
+const IPYTHON_API = 'http://localhost:51789';
+
+// Generate random user (in production, this comes from auth)
+const userId = `user-${Math.random().toString(36).slice(2, 7)}`;
+const userName = `User ${userId.slice(-4).toUpperCase()}`;
+
+// ============================================================================
+// Initial Document Content
+// ============================================================================
+
+const initialDoc = `# Collaborative Markdown Editor
+
+This demo uses the **unified collaborative editor API**.
+
+Open this page in multiple browser windows to test real-time collaboration:
+- Document syncs via Yjs CRDT
+- See other users' cursors
+- Block-level locks prevent conflicts
+- Streaming output visible to all
+
+---
+
+## Code Execution
+
+\`\`\`python
+import time
+for i in range(5):
+    print(f"Step {i + 1}...")
+    time.sleep(0.3)
+print("Done!")
+\`\`\`
+
+## HTML Widgets
+
+\`\`\`html
+<div style="padding: 1.5em; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; color: white; font-family: system-ui; text-align: center;">
+  <h2 style="margin: 0;">Hello World!</h2>
+  <p style="margin: 0.5em 0 0; opacity: 0.9;">This is rendered HTML</p>
+</div>
+\`\`\`
+
+## Math (KaTeX)
+
+$$E = mc^2$$
+
+$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$
+
+---
+
+*Edit this document to test collaboration features.*`;
+
+// ============================================================================
+// Status Updates
+// ============================================================================
+
+function updateStatus(type, message, color) {
+  const el = document.getElementById('collab-status');
+  if (el) {
+    el.textContent = message;
+    el.style.color = color || 'var(--text-muted)';
+  }
+}
+
+// ============================================================================
+// Executor Setup (IPython with fallback to Mock)
+// ============================================================================
+
+async function createExecutor() {
+  try {
+    const response = await fetch(`${IPYTHON_API}/api/ipython/sessions`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(1000),
+    });
+
+    if (response.ok) {
+      console.log('✓ Connected to IPython server');
+      const client = createMinimalIPythonClient(IPYTHON_API);
+      return new IPythonExecutor({ client });
+    }
+  } catch (e) {
+    console.log('IPython server not available, using mock executor');
+  }
+
+  return new MockExecutor();
+}
+
+// ============================================================================
+// Main: Create Collaborative Editor
+// ============================================================================
+
+async function main() {
+  const executor = await createExecutor();
+
+  try {
+    // Clear loading message
+    const container = document.getElementById('editor-container');
+    container.innerHTML = '';
+
+    // This single call wires everything together:
+    // - Yjs document (CRDT)
+    // - WebSocket provider
+    // - Awareness (cursors, presence)
+    // - Lock manager (block-level locks)
+    // - Streaming overlays
+    const collab = await createCollaborativeEditor({
+      parent: container,
+      doc: initialDoc,
+      executor,
+      theme: 'zen',
+      collab: {
+        url: COLLAB_URL,
+        roomId: ROOM_ID,
+        userId,
+        userName,
+      },
+      onChange: (doc) => {
+        // Update word count
+        const words = doc.trim() ? doc.trim().split(/\s+/).length : 0;
+        const wordCountEl = document.getElementById('word-count');
+        if (wordCountEl) wordCountEl.textContent = `${words} words`;
+      },
+    });
+
+    // Update status
+    updateStatus('connected', `● ${userName}`, collab.awarenessAdapter.getLocalState()?.user?.color);
+
+    // Expose for debugging
+    window.collab = collab;
+    window.editor = collab.editor;
+
+    console.log('✓ Collaborative editor ready');
+    console.log('  Room:', ROOM_ID);
+    console.log('  User:', userName, `(${userId})`);
+    console.log('  Users online:', collab.awarenessAdapter.getUserCount());
+
+    // Listen for connection changes
+    collab.awarenessAdapter.on('change', () => {
+      const count = collab.awarenessAdapter.getUserCount();
+      console.log('Users online:', count);
+    });
+
+  } catch (error) {
+    console.error('Failed to create collaborative editor:', error);
+    updateStatus('error', '✕ Connection failed', '#ef4444');
+
+    // Show error in container
+    const container = document.getElementById('editor-container');
+    container.innerHTML = `
+      <div style="text-align: center; padding: 2em; color: var(--text-muted);">
+        <p style="font-size: 1.2em; margin-bottom: 0.5em;">Failed to connect</p>
+        <p style="font-size: 0.9em;">${error.message}</p>
+        <p style="font-size: 0.85em; margin-top: 1em;">
+          Make sure the y-websocket server is running:<br>
+          <code style="background: var(--code-bg); padding: 0.3em 0.6em; border-radius: 4px;">pnpm run yjs-server</code>
+        </p>
+      </div>
+    `;
+  }
+}
+
+main();
+</script>
+
+</body>
+</html>

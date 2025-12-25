@@ -1,0 +1,125 @@
+# MRMD AI Programs Configuration
+app_id: mrmd-ai
+description: "AI completion, correction, and fix programs for MRMD editor"
+
+# Juice Levels - Progressive quality/cost tradeoff
+# Use --juice 0-4 or set MRMD_JUICE_LEVEL environment variable
+juice:
+  default: 0  # Default juice level (0=quick, 4=ultimate)
+  levels:
+    0:  # QUICK - Fast & cheap
+      name: quick
+      emoji: "⚡"
+      description: "Fast & cheap (Kimi K2 on Groq)"
+      model: groq/moonshotai/kimi-k2-instruct-0905
+      temperature: 0.7
+      max_tokens: 4096
+
+    1:  # BALANCED - Better quality
+      name: balanced
+      emoji: "⚖️"
+      description: "Good quality (Claude Sonnet 4.5)"
+      model: anthropic/claude-sonnet-4-5
+      temperature: 0.7
+      max_tokens: 4096
+
+    2:  # DEEP - Thorough reasoning
+      name: deep
+      emoji: "🧠"
+      description: "Deep reasoning (Gemini 3 thinking)"
+      model: gemini/gemini-3-pro-preview
+      temperature: 1.0
+      max_tokens: 16000
+      reasoning_effort: high
+
+    3:  # MAXIMUM - Best single model
+      name: maximum
+      emoji: "🚀"
+      description: "Maximum quality (Opus 4.5 thinking high)"
+      model: anthropic/claude-opus-4-5
+      temperature: 1.0
+      max_tokens: 16000
+      reasoning_effort: high
+
+    4:  # ULTIMATE - Multi-model merger
+      name: ultimate
+      emoji: "🔥"
+      description: "All 4 models with high thinking, synthesized by Gemini 3"
+      merger: true
+      models:
+        - openrouter/x-ai/grok-4        # xAI Grok 4 via OpenRouter
+        - anthropic/claude-sonnet-4-5
+        - gemini/gemini-3-pro-preview
+        - anthropic/claude-opus-4-5
+      synthesizer: gemini/gemini-3-pro-preview
+
+models:
+  # Default model - using Groq's Kimi K2 (juice level 0)
+  default: groq:kimi-k2
+
+  # Model registry - all available models
+  registry:
+    groq:kimi-k2:
+      model: groq/moonshotai/kimi-k2-instruct-0905
+      env: GROQ_API_KEY
+      max_tokens: 4096
+      temperature: 0.7
+      model_type: chat
+
+    groq:llama-70b:
+      model: groq/llama-3.3-70b-versatile
+      env: GROQ_API_KEY
+      max_tokens: 4096
+      temperature: 0.7
+      model_type: chat
+
+    groq:llama-8b:
+      model: groq/llama-3.1-8b-instant
+      env: GROQ_API_KEY
+      max_tokens: 2048
+      temperature: 0.5
+      model_type: chat
+
+    anthropic:claude-sonnet:
+      model: anthropic/claude-sonnet-4-5-20250514
+      env: ANTHROPIC_API_KEY
+      max_tokens: 4096
+      temperature: 0.7
+      model_type: chat
+
+    anthropic:claude-haiku:
+      model: anthropic/claude-3-5-haiku-latest
+      env: ANTHROPIC_API_KEY
+      max_tokens: 2048
+      temperature: 0.5
+      model_type: chat
+
+    openai:gpt-4o:
+      model: openai/gpt-4o
+      env: OPENAI_API_KEY
+      max_tokens: 4096
+      temperature: 0.7
+      model_type: chat
+
+    openai:gpt-4o-mini:
+      model: openai/gpt-4o-mini
+      env: OPENAI_API_KEY
+      max_tokens: 2048
+      temperature: 0.5
+      model_type: chat
+
+    # For local models (Ollama, LM Studio, etc.)
+    local:llama:
+      model: openai/llama3.2
+      api_base: http://127.0.0.1:11434/v1
+      api_key: ollama
+      max_tokens: 2048
+      temperature: 0.7
+      model_type: chat
+
+# Per-program model overrides
+# All use Kimi K2 by default, can override for specific programs
+program_models: {}
+  # Fast completions can use smaller model if needed
+  # FinishSentencePredict: groq:llama-8b
+  # FinishCodeLinePredict: groq:llama-8b

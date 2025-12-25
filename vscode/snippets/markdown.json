@@ -1,0 +1,120 @@
+{
+  "Python Code Block": {
+    "prefix": "py",
+    "body": [
+      "```python",
+      "$0",
+      "```"
+    ],
+    "description": "Python code block"
+  },
+  "Python Function": {
+    "prefix": "pyf",
+    "body": [
+      "```python",
+      "def ${1:function_name}(${2:args}):",
+      "    \"\"\"${3:Docstring.}\"\"\"",
+      "    $0",
+      "```"
+    ],
+    "description": "Python function with docstring"
+  },
+  "Python Class": {
+    "prefix": "pyc",
+    "body": [
+      "```python",
+      "class ${1:ClassName}:",
+      "    \"\"\"${2:Class docstring.}\"\"\"",
+      "    ",
+      "    def __init__(self${3:, args}):",
+      "        $0",
+      "```"
+    ],
+    "description": "Python class with docstring"
+  },
+  "Python Import": {
+    "prefix": "pyi",
+    "body": [
+      "```python",
+      "import ${1:module}",
+      "```"
+    ],
+    "description": "Python import statement"
+  },
+  "JavaScript Code Block": {
+    "prefix": "js",
+    "body": [
+      "```javascript",
+      "$0",
+      "```"
+    ],
+    "description": "JavaScript code block"
+  },
+  "TypeScript Code Block": {
+    "prefix": "ts",
+    "body": [
+      "```typescript",
+      "$0",
+      "```"
+    ],
+    "description": "TypeScript code block"
+  },
+  "Shell Code Block": {
+    "prefix": "sh",
+    "body": [
+      "```bash",
+      "$0",
+      "```"
+    ],
+    "description": "Bash/shell code block"
+  },
+  "SQL Code Block": {
+    "prefix": "sql",
+    "body": [
+      "```sql",
+      "$0",
+      "```"
+    ],
+    "description": "SQL code block"
+  },
+  "Markdown Nested Block": {
+    "prefix": "md",
+    "body": [
+      "````markdown",
+      "$0",
+      "````"
+    ],
+    "description": "Nested markdown block (4 backticks)"
+  },
+  "Python DataFrame Display": {
+    "prefix": "pyd",
+    "body": [
+      "```python",
+      "${1:df}.head(${2:10})",
+      "```"
+    ],
+    "description": "Display DataFrame head"
+  },
+  "Python Plot": {
+    "prefix": "pyp",
+    "body": [
+      "```python",
+      "import matplotlib.pyplot as plt",
+      "",
+      "plt.figure(figsize=(${1:10}, ${2:6}))",
+      "$0",
+      "plt.show()",
+      "```"
+    ],
+    "description": "Matplotlib plot template"
+  },
+  "Python Pip Install": {
+    "prefix": "pip",
+    "body": [
+      "```python",
+      "%pip install ${1:package}",
+      "```"
+    ],
+    "description": "Install package with %pip"
+  }
+}

@@ -1,0 +1,490 @@
+{
+  "name": "mrmd",
+  "displayName": "mrmd - Markdown that runs",
+  "description": "Execute code blocks in markdown files. Literate programming for VS Code.",
+  "version": "0.2.1",
+  "publisher": "maximerivestio",
+  "author": {
+    "name": "Maxime Rivest"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maximerivestio/mrmd"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Notebooks",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "markdown",
+    "notebook",
+    "repl",
+    "literate programming",
+    "jupyter",
+    "execute",
+    "code blocks"
+  ],
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mrmd-explorer",
+          "title": "mrmd",
+          "icon": "$(symbol-variable)"
+        }
+      ]
+    },
+    "views": {
+      "mrmd-explorer": [
+        {
+          "type": "webview",
+          "id": "mrmd.variablePanel",
+          "name": "Variables",
+          "contextualTitle": "mrmd Variables",
+          "when": "!mrmd.useTreeView"
+        },
+        {
+          "id": "mrmd.variableTree",
+          "name": "Variables",
+          "contextualTitle": "mrmd Variables",
+          "when": "mrmd.useTreeView"
+        },
+        {
+          "type": "webview",
+          "id": "mrmd.outputPanel",
+          "name": "Outputs",
+          "contextualTitle": "mrmd Outputs"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "mrmd.refreshVariables",
+        "title": "Refresh Variables",
+        "category": "mrmd",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mrmd.clearVariables",
+        "title": "Clear Variables",
+        "category": "mrmd",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "mrmd.showVariableDetail",
+        "title": "Show Details",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.copyVariable",
+        "title": "Copy Name",
+        "category": "mrmd",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "mrmd.insertVariable",
+        "title": "Insert into Editor",
+        "category": "mrmd",
+        "icon": "$(insert)"
+      },
+      {
+        "command": "mrmd.viewData",
+        "title": "View Data",
+        "category": "mrmd",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "mrmd.runBlock",
+        "title": "Run Code Block",
+        "category": "mrmd",
+        "icon": "$(play)"
+      },
+      {
+        "command": "mrmd.runAllBlocks",
+        "title": "Run All Code Blocks",
+        "category": "mrmd",
+        "icon": "$(run-all)"
+      },
+      {
+        "command": "mrmd.showSessions",
+        "title": "Show Sessions",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.startServer",
+        "title": "Start Server",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.stopServer",
+        "title": "Stop Server",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.restartServer",
+        "title": "Restart Server",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.showOutput",
+        "title": "Show Output",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.runBlockIPython",
+        "title": "Run Code Block (IPython)",
+        "category": "mrmd",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "mrmd.runBlockAndAdvance",
+        "title": "Run Code Block and Advance",
+        "category": "mrmd",
+        "icon": "$(play)"
+      },
+      {
+        "command": "mrmd.cancelExecution",
+        "title": "Cancel Execution",
+        "category": "mrmd",
+        "icon": "$(stop)"
+      },
+      {
+        "command": "mrmd.runSetup",
+        "title": "Run Setup Wizard",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.resetSetup",
+        "title": "Reset Setup (for testing)",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.manageServers",
+        "title": "Manage Servers",
+        "category": "mrmd",
+        "icon": "$(server)"
+      },
+      {
+        "command": "mrmd.selectPython",
+        "title": "Select Python Environment",
+        "category": "mrmd",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "mrmd.goToPreviousBlock",
+        "title": "Go to Previous Code Block",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.goToNextBlock",
+        "title": "Go to Next Code Block",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.moveBlockUp",
+        "title": "Move Block Up",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.moveBlockDown",
+        "title": "Move Block Down",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.deleteOutput",
+        "title": "Delete Output",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.clearAllOutputs",
+        "title": "Clear All Outputs",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.toggleCollapse",
+        "title": "Toggle Collapse Output",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.collapseOutput",
+        "title": "Collapse Output",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.expandOutput",
+        "title": "Expand Output",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.collapseAllOutputs",
+        "title": "Collapse All Outputs",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.expandAllOutputs",
+        "title": "Expand All Outputs",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.splitBlock",
+        "title": "Split Block at Cursor",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.mergeBlocks",
+        "title": "Merge with Next Block",
+        "category": "mrmd"
+      },
+      {
+        "command": "mrmd.showShortcuts",
+        "title": "Show Keyboard Shortcuts",
+        "category": "mrmd",
+        "icon": "$(keyboard)"
+      }
+    ],
+"configurationDefaults": {
+      "[markdown]": {
+        "editor.quickSuggestions": {
+          "other": "on",
+          "comments": "off",
+          "strings": "off"
+        },
+        "editor.snippetSuggestions": "top"
+      }
+    },
+    "configuration": {
+      "title": "mrmd",
+      "properties": {
+        "mrmd.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to Python executable (leave empty for auto-detection from venv)"
+        },
+        "mrmd.pythonEnvSource": {
+          "type": "string",
+          "enum": ["workspace", "markdownFolder", "explicit"],
+          "default": "workspace",
+          "enumDescriptions": [
+            "Look for .venv in the workspace/project root",
+            "Look for .venv in the same folder as the markdown file",
+            "Only use the explicit mrmd.pythonPath setting"
+          ],
+          "description": "Where to look for Python virtual environment"
+        },
+        "mrmd.autoStartServer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the mrmd server when running code"
+        },
+        "mrmd.showCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Run buttons above code blocks"
+        },
+        "mrmd.localMrmdPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to local mrmd source for development (e.g., /home/user/Projects/mrmd). Leave empty to install from PyPI."
+        }
+      }
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "mrmd.refreshVariables",
+          "when": "view == mrmd.variables",
+          "group": "navigation"
+        },
+        {
+          "command": "mrmd.clearVariables",
+          "when": "view == mrmd.variables",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "mrmd.viewData",
+          "when": "view == mrmd.variables && viewItem == data",
+          "group": "inline"
+        },
+        {
+          "command": "mrmd.copyVariable",
+          "when": "view == mrmd.variables && viewItem != group",
+          "group": "1_actions"
+        },
+        {
+          "command": "mrmd.insertVariable",
+          "when": "view == mrmd.variables && viewItem != group",
+          "group": "1_actions"
+        },
+        {
+          "command": "mrmd.viewData",
+          "when": "view == mrmd.variables && viewItem == data",
+          "group": "2_view"
+        },
+        {
+          "command": "mrmd.viewData",
+          "when": "view == mrmd.variables && viewItem == collection",
+          "group": "2_view"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "mrmd.runAllBlocks",
+          "when": "resourceLangId == markdown",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "mrmd.runBlock",
+          "when": "resourceLangId == markdown",
+          "group": "mrmd"
+        },
+        {
+          "command": "mrmd.runAllBlocks",
+          "when": "resourceLangId == markdown",
+          "group": "mrmd"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "mrmd.runBlock",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.runBlockAndAdvance",
+        "key": "shift+enter",
+        "mac": "shift+enter",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.runAllBlocks",
+        "key": "ctrl+shift+enter",
+        "mac": "cmd+shift+enter",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.cancelExecution",
+        "key": "escape",
+        "mac": "escape",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.goToPreviousBlock",
+        "key": "alt+pageup",
+        "mac": "alt+pageup",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.goToNextBlock",
+        "key": "alt+pagedown",
+        "mac": "alt+pagedown",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.moveBlockUp",
+        "key": "ctrl+shift+pageup",
+        "mac": "cmd+shift+pageup",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.moveBlockDown",
+        "key": "ctrl+shift+pagedown",
+        "mac": "cmd+shift+pagedown",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.deleteOutput",
+        "key": "ctrl+shift+d",
+        "mac": "cmd+shift+d",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.clearAllOutputs",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.toggleCollapse",
+        "key": "ctrl+shift+\\",
+        "mac": "cmd+shift+\\",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.collapseOutput",
+        "key": "ctrl+shift+[",
+        "mac": "cmd+shift+[",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.expandOutput",
+        "key": "ctrl+shift+]",
+        "mac": "cmd+shift+]",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.collapseAllOutputs",
+        "key": "ctrl+k ctrl+[",
+        "mac": "cmd+k cmd+[",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.expandAllOutputs",
+        "key": "ctrl+k ctrl+]",
+        "mac": "cmd+k cmd+]",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.splitBlock",
+        "key": "ctrl+shift+s",
+        "mac": "cmd+shift+s",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      },
+      {
+        "command": "mrmd.mergeBlocks",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m",
+        "when": "editorTextFocus && resourceLangId == markdown"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "markdown",
+        "path": "./snippets/markdown.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "tsc -p ./",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "npm run build && vsce package",
+    "publish": "npm run build && vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  },
+  "dependencies": {}
+}

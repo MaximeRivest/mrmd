@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mrmd - Markdown that runs</title>
+    <link rel="stylesheet" href="/styles/main.css">
+    <!-- KaTeX for LaTeX rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <!-- Highlight.js for syntax highlighting (190+ languages) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+    <!-- xterm.js for terminal emulation (local copy) -->
+    <link rel="stylesheet" href="/vendor/xterm/xterm.css">
+    <script src="/vendor/xterm/xterm.js"></script>
+    <script src="/vendor/xterm/addon-fit.js"></script>
+    <script src="/vendor/xterm/addon-web-links.js"></script>
+    <script src="/vendor/xterm/addon-webgl.js"></script>
+    <!-- All styles are now in /styles/main.css -->
+</head>
+<body>
+    <div class="app-frame">
+        <div class="container">
+        <div class="editor-pane">
+            <div id="file-tabs-container"></div>
+            <div class="current-file-indicator" id="current-file-indicator">
+                <span class="file-name">untitled</span>
+                <button class="toc-btn" id="toc-toggle-btn" title="Toggle Table of Contents">TOC</button>
+                <button class="save-btn" id="save-btn" title="Save (Ctrl+S)">Save</button>
+            </div>
+            <div class="editor-container" id="editor-container"></div>
+            <div class="heading-minimap" id="heading-minimap"></div>
+            <div class="status-bar">
+                <span class="status-indicator notification-badge" id="notification-badge" title="Notifications">
+                    <span class="badge-icon">●</span>
+                    <span class="badge-count">0</span>
+                </span>
+                <span class="status-indicator running-badge" id="running-badge" title="Running tasks">
+                    <span class="badge-icon">◐</span>
+                    <span class="badge-count">0</span>
+                </span>
+                <span class="status-divider">|</span>
+                <span class="status-indicator session-badge" id="session-badge" title="Click to change session">
+                    <span class="badge-icon">λ</span>
+                    <span class="badge-label" id="session-label">main</span>
+                </span>
+                <span class="status-indicator venv-badge" id="venv-badge" title="Click to change venv">
+                    <span class="badge-label" id="venv-label">.venv</span>
+                </span>
+                <span class="status-divider">|</span>
+                <span>Cursor: <code id="cursor-pos">0</code></span>
+                <span>Line: <code id="edit-line">-</code></span>
+                <span class="theme-picker-wrapper">
+                    <button class="theme-picker-btn" id="theme-picker-btn" title="Change theme">
+                        <span class="theme-icon">◐</span>
+                        <span class="theme-label" id="theme-label">Default</span>
+                        <span class="theme-arrow">▾</span>
+                    </button>
+                    <div class="theme-picker-dropdown" id="theme-picker-dropdown">
+                        <div class="theme-option" data-theme="default">
+                            <span class="theme-check">✓</span>
+                            <span class="theme-name">Default</span>
+                            <span class="theme-desc">Monospace, minimal</span>
+                        </div>
+                        <div class="theme-option" data-theme="github">
+                            <span class="theme-check">✓</span>
+                            <span class="theme-name">GitHub</span>
+                            <span class="theme-desc">README style</span>
+                        </div>
+                        <div class="theme-option" data-theme="docs">
+                            <span class="theme-check">✓</span>
+                            <span class="theme-name">Docs</span>
+                            <span class="theme-desc">Google Docs style</span>
+                        </div>
+                    </div>
+                </span>
+                <button class="restart-btn" id="restart-kernel" title="Restart IPython kernel">⟳ Kernel</button>
+                <button class="restart-btn restart-server" id="restart-server" title="Restart server (reloads code)">⟳ Server</button>
+                <span class="view-mode-group">
+                    <button class="mode-toggle-btn" id="zen-toggle" title="Focus mode (hide sidebar)">○ Zen</button>
+                    <button class="mode-toggle-btn" id="mode-toggle-btn" title="Switch to Compact Mode (Ctrl+\)">◇ Compact</button>
+                </span>
+                <span class="ai-run-group">
+                    <span class="ai-run-juice" id="ai-run-juice" title="Click to change juice level">
+                        <span class="juice-seg" data-level="0"></span>
+                        <span class="juice-seg" data-level="1"></span>
+                        <span class="juice-seg" data-level="2"></span>
+                        <span class="juice-seg" data-level="3"></span>
+                        <span class="juice-seg" data-level="4"></span>
+                    </span>
+                    <button class="ai-run-btn" id="ai-run-btn" title="Run AI on document (document as prompt)">AI ▶</button>
+                </span>
+                <span class="exec-status" id="exec-status">ready</span>
+            </div>
+        </div>
+        <div class="sidebar-resizer" id="sidebar-resizer"></div>
+        <div class="sidebar">
+            <div class="sidebar-tabs">
+                <button class="sidebar-tab" data-panel="projects" title="Projects"><span class="tab-icon">◇</span><span class="tab-label">Projects</span></button>
+                <button class="sidebar-tab" data-panel="files" title="Files"><span class="tab-icon">≡</span><span class="tab-label">Files</span></button>
+                <button class="sidebar-tab active" data-panel="variables" title="Variables"><span class="tab-icon">λ</span><span class="tab-label">Variables</span></button>
+                <button class="sidebar-tab" data-panel="processes" title="Processes"><span class="tab-icon">⚙</span><span class="tab-label">Processes</span></button>
+                <button class="sidebar-tab" data-panel="history" title="History"><span class="tab-icon">⟲</span><span class="tab-label">History</span></button>
+                <button class="sidebar-tab" data-panel="terminal" title="Terminal"><span class="tab-icon">▶</span><span class="tab-label">Terminal</span></button>
+                <button class="sidebar-tab" data-panel="markdown" title="Markdown"><span class="tab-icon">#</span><span class="tab-label">Markdown</span></button>
+            </div>
+            <div class="sidebar-content">
+                <div class="sidebar-panel" id="projects-panel">
+                    <!-- Recent Projects (populated by JS) -->
+                </div>
+                <div class="sidebar-panel" id="files-panel">
+                    <!-- Folder Browser Header -->
+                    <div class="browser-header">
+                        <button class="browser-root-btn" id="browser-root-btn" title="Click to change root folder">~</button>
+                    </div>
+                    <!-- File Browser (uses reusable component) -->
+                    <div class="file-browser-container" id="fileBrowserContainer"></div>
+                </div>
+                <div class="sidebar-panel active" id="variables-panel">
+                    <div class="env-pane-header">
+                        <span class="env-pane-title">Environment</span>
+                        <button class="env-pane-refresh" id="refresh-vars" title="Refresh">↻</button>
+                    </div>
+                    <div class="env-pane-content" id="envPaneContent">
+                        <div class="env-pane-empty">Run code to see variables</div>
+                    </div>
+                </div>
+                <div class="sidebar-panel" id="processes-panel">
+                    <!-- Process Sidebar (populated by JS) -->
+                </div>
+                <div class="sidebar-panel" id="history-panel">
+                    <!-- History Panel (populated by JS) -->
+                </div>
+                <div class="sidebar-panel" id="terminal-panel">
+                    <div class="sidebar-terminal-container" id="sidebar-terminal"></div>
+                </div>
+                <div class="sidebar-panel" id="markdown-panel">
+                    <textarea id="raw-markdown" spellcheck="false"></textarea>
+                </div>
+            </div>
+        </div>
+    </div>
+    </div><!-- end app-frame -->
+
+    <!-- Image modal -->
+    <div class="image-modal-overlay" id="imageModalOverlay">
+        <img id="imageModalImg" src="">
+        <button class="image-modal-close" id="imageModalClose">&times;</button>
+    </div>
+
+    <!-- New service-based architecture entry point -->
+    <script type="module" src="/src/boot.js"></script>
+    <!-- Legacy entry point (can be used with ?legacy=1):
+    <script type="module" src="/core/app.js"></script>
+    -->
+</body>
+</html>

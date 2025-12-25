@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Node
+node_modules/
+
+# Frontend build
+frontend/dist/
+
+# VS Code extension
+vscode/out/
+*.vsix
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# MRMD editor state (auto-added)
+.mrmd/
+.env
+start.sh

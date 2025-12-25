@@ -1,0 +1,492 @@
+"""
+Yjs Document Manager - Server-side CRDT document management.
+
+Uses pycrdt for Yjs-compatible CRDT operations. This is NOT just a relay -
+we maintain the authoritative document state on the server, enabling:
+
+- Proper sync for new joiners (they get full document state)
+- Persistence to disk (documents survive server restarts)
+- Server-side document access (for AI, file watching, etc.)
+- Conflict-free merging of concurrent edits
+
+The Y.Doc contains:
+- Y.Text('content'): The markdown source of truth
+- Awareness state is handled separately (ephemeral, not persisted)
+"""
+
+import asyncio
+import os
+from pathlib import Path
+from typing import Dict, Optional, Callable, Awaitable
+from dataclasses import dataclass, field
+import time
+
+try:
+    from pycrdt import Doc, Text
+    _HAS_PYCRDT = True
+except ImportError:  # pragma: no cover - runtime guard for optional dep
+    Doc = None
+    Text = None
+    _HAS_PYCRDT = False
+
+
+def _require_pycrdt():
+    if not _HAS_PYCRDT:
+        raise RuntimeError(
+            "pycrdt is required for collaborative editing. Install it with "
+            "'uv pip install pycrdt' or 'pip install pycrdt'."
+        )
+
+
+@dataclass
+class YjsDocument:
+    """A managed Yjs document for a file."""
+    doc: Doc
+    file_path: str
+    last_modified: float = field(default_factory=time.time)
+    pending_save: bool = False
+
+    @property
+    def content(self) -> str:
+        """Get the current document content."""
+        return str(self.doc.get('content', type=Text))
+
+    @content.setter
+    def content(self, value: str):
+        """Set the document content (replaces all)."""
+        text = self.doc.get('content', type=Text)
+        text.clear()
+        text.insert(0, value)
+        self.last_modified = time.time()
+
+
+class YjsDocumentManager:
+    """
+    Manages Yjs documents for real-time collaboration.
+
+    This is the server-side authority for document state. Key responsibilities:
+
+    1. **Document lifecycle**: Create, load, save, close documents
+    2. **Sync protocol**: Handle Yjs sync messages from clients
+    3. **Persistence**: Save documents to disk, load on reconnect
+    4. **External updates**: Apply changes from AI, file system, etc.
+
+    Thread-safe via asyncio locks.
+    """
+
+    def __init__(
+        self,
+        storage_dir: Optional[str] = None,
+        auto_save_interval: float = 5.0,
+        on_document_changed: Optional[Callable[[str, bytes], Awaitable[None]]] = None,
+    ):
+        """
+        Initialize the Yjs document manager.
+
+        Args:
+            storage_dir: Directory for persisting document state (optional)
+            auto_save_interval: Seconds between auto-saves (0 to disable)
+            on_document_changed: Callback when document changes (for broadcasting)
+        """
+        _require_pycrdt()
+        # file_path -> YjsDocument
+        self._documents: Dict[str, YjsDocument] = {}
+        self._lock = asyncio.Lock()
+
+        # Persistence
+        self._storage_dir = Path(storage_dir) if storage_dir else None
+        if self._storage_dir:
+            self._storage_dir.mkdir(parents=True, exist_ok=True)
+
+        # Auto-save
+        self._auto_save_interval = auto_save_interval
+        self._auto_save_task: Optional[asyncio.Task] = None
+
+        # Callbacks
+        self._on_document_changed = on_document_changed
+
+    async def start(self):
+        """Start background tasks (auto-save, etc.)."""
+        if self._auto_save_interval > 0:
+            self._auto_save_task = asyncio.create_task(self._auto_save_loop())
+
+    async def stop(self):
+        """Stop background tasks and save all documents."""
+        if self._auto_save_task:
+            self._auto_save_task.cancel()
+            try:
+                await self._auto_save_task
+            except asyncio.CancelledError:
+                pass
+
+        # Save all pending documents
+        await self._save_all_pending()
+
+    # =========================================================================
+    # Document Lifecycle
+    # =========================================================================
+
+    async def get_or_create_document(
+        self,
+        file_path: str,
+        initial_content: Optional[str] = None,
+    ) -> YjsDocument:
+        """
+        Get an existing document or create a new one.
+
+        If the document doesn't exist:
+        1. Try to load from persistence storage
+        2. Try to load from file system
+        3. Create empty document with initial_content
+
+        Args:
+            file_path: Absolute path to the file
+            initial_content: Content to use if creating new document
+
+        Returns:
+            The YjsDocument instance
+        """
+        async with self._lock:
+            if file_path in self._documents:
+                return self._documents[file_path]
+
+            # Try to load from persistence
+            doc = await self._load_from_storage(file_path)
+
+            if doc is None:
+                # Create new document
+                doc = Doc()
+                text = doc.get('content', type=Text)
+
+                # Try to load from file system
+                content = initial_content
+                if content is None and os.path.exists(file_path):
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                    except Exception as e:
+                        print(f'[YjsManager] Failed to read {file_path}: {e}')
+                        content = ''
+
+                if content:
+                    text.insert(0, content)
+
+            yjs_doc = YjsDocument(doc=doc, file_path=file_path)
+            self._documents[file_path] = yjs_doc
+
+            print(f'[YjsManager] Document loaded: {file_path} ({len(yjs_doc.content)} chars)')
+            return yjs_doc
+
+    async def close_document(self, file_path: str, save: bool = True):
+        """
+        Close a document and optionally save it.
+
+        Args:
+            file_path: Path to the document
+            save: Whether to save before closing
+        """
+        async with self._lock:
+            if file_path not in self._documents:
+                return
+
+            yjs_doc = self._documents[file_path]
+
+            if save:
+                await self._save_to_storage(yjs_doc)
+
+            del self._documents[file_path]
+            print(f'[YjsManager] Document closed: {file_path}')
+
+    def has_document(self, file_path: str) -> bool:
+        """Check if a document is currently loaded."""
+        return file_path in self._documents
+
+    def get_document(self, file_path: str) -> Optional[YjsDocument]:
+        """Get a loaded document (returns None if not loaded)."""
+        return self._documents.get(file_path)
+
+    # =========================================================================
+    # Yjs Sync Protocol
+    # =========================================================================
+
+    async def apply_update(self, file_path: str, update: bytes) -> bool:
+        """
+        Apply a Yjs update to a document.
+
+        This is the main entry point for client updates. The update is a
+        binary blob from Y.encodeStateAsUpdate() or transaction updates.
+
+        Args:
+            file_path: Path to the document
+            update: Binary Yjs update
+
+        Returns:
+            True if applied successfully, False otherwise
+        """
+        yjs_doc = self._documents.get(file_path)
+        if not yjs_doc:
+            return False
+
+        try:
+            yjs_doc.doc.apply_update(update)
+            yjs_doc.last_modified = time.time()
+            yjs_doc.pending_save = True
+
+            # Notify listeners
+            if self._on_document_changed:
+                await self._on_document_changed(file_path, update)
+
+            return True
+        except Exception as e:
+            print(f'[YjsManager] Failed to apply update to {file_path}: {e}')
+            return False
+
+    def get_state_vector(self, file_path: str) -> Optional[bytes]:
+        """
+        Get the state vector for a document.
+
+        The state vector represents what updates the server has seen.
+        Clients use this to determine what updates to send.
+
+        Args:
+            file_path: Path to the document
+
+        Returns:
+            Binary state vector, or None if document not found
+        """
+        yjs_doc = self._documents.get(file_path)
+        if not yjs_doc:
+            return None
+
+        return bytes(yjs_doc.doc.get_state())
+
+    def get_full_state(self, file_path: str) -> Optional[bytes]:
+        """
+        Get the full document state as a Yjs update.
+
+        This is used to sync new clients - they apply this update
+        to get the complete document.
+
+        Args:
+            file_path: Path to the document
+
+        Returns:
+            Binary update containing full document state
+        """
+        yjs_doc = self._documents.get(file_path)
+        if not yjs_doc:
+            return None
+
+        return bytes(yjs_doc.doc.get_update())
+
+    def get_diff(self, file_path: str, state_vector: bytes) -> Optional[bytes]:
+        """
+        Get updates that the client is missing.
+
+        Given the client's state vector, return an update with all
+        changes the client doesn't have.
+
+        Args:
+            file_path: Path to the document
+            state_vector: Client's state vector
+
+        Returns:
+            Binary update with missing changes
+        """
+        yjs_doc = self._documents.get(file_path)
+        if not yjs_doc:
+            return None
+
+        try:
+            return bytes(yjs_doc.doc.get_update(state_vector))
+        except Exception as e:
+            print(f'[YjsManager] Failed to get diff for {file_path}: {e}')
+            # Fall back to full state
+            return bytes(yjs_doc.doc.get_update())
+
+    # =========================================================================
+    # External Updates (AI, File System, etc.)
+    # =========================================================================
+
+    async def set_content(
+        self,
+        file_path: str,
+        content: str,
+        origin: str = 'external',
+    ) -> Optional[bytes]:
+        """
+        Set document content from an external source.
+
+        This replaces the entire document content. Use for:
+        - AI rewrites
+        - File system changes
+        - Initial sync
+
+        Args:
+            file_path: Path to the document
+            content: New content
+            origin: Origin identifier for the transaction
+
+        Returns:
+            The update that was applied (for broadcasting), or None
+        """
+        yjs_doc = await self.get_or_create_document(file_path, content)
+
+        # Get state before change
+        old_state = bytes(yjs_doc.doc.get_state())
+
+        # Apply change
+        text = yjs_doc.doc.get('content', type=Text)
+        text.clear()
+        text.insert(0, content)
+
+        yjs_doc.last_modified = time.time()
+        yjs_doc.pending_save = True
+
+        # Get the update (diff from old state)
+        update = bytes(yjs_doc.doc.get_update(old_state))
+
+        if self._on_document_changed:
+            await self._on_document_changed(file_path, update)
+
+        print(f'[YjsManager] Content set for {file_path} from {origin}')
+        return update
+
+    def get_content(self, file_path: str) -> Optional[str]:
+        """
+        Get the current document content.
+
+        Args:
+            file_path: Path to the document
+
+        Returns:
+            Document content as string, or None if not loaded
+        """
+        yjs_doc = self._documents.get(file_path)
+        if not yjs_doc:
+            return None
+        return yjs_doc.content
+
+    # =========================================================================
+    # Persistence
+    # =========================================================================
+
+    async def _save_to_storage(self, yjs_doc: YjsDocument):
+        """Save a document to persistence storage."""
+        if not self._storage_dir:
+            return
+
+        try:
+            # Create a safe filename from the path
+            safe_name = yjs_doc.file_path.replace('/', '__').replace('\\', '__')
+            storage_path = self._storage_dir / f'{safe_name}.yjs'
+
+            # Save full document state
+            state = yjs_doc.doc.get_update()
+            storage_path.write_bytes(bytes(state))
+
+            yjs_doc.pending_save = False
+            print(f'[YjsManager] Saved: {yjs_doc.file_path}')
+        except Exception as e:
+            print(f'[YjsManager] Failed to save {yjs_doc.file_path}: {e}')
+
+    async def _load_from_storage(self, file_path: str) -> Optional[Doc]:
+        """Load a document from persistence storage."""
+        if not self._storage_dir:
+            return None
+
+        try:
+            safe_name = file_path.replace('/', '__').replace('\\', '__')
+            storage_path = self._storage_dir / f'{safe_name}.yjs'
+
+            if not storage_path.exists():
+                return None
+
+            state = storage_path.read_bytes()
+            doc = Doc()
+            doc.apply_update(state)
+
+            print(f'[YjsManager] Loaded from storage: {file_path}')
+            return doc
+        except Exception as e:
+            print(f'[YjsManager] Failed to load {file_path} from storage: {e}')
+            return None
+
+    async def _save_all_pending(self):
+        """Save all documents with pending changes."""
+        for yjs_doc in self._documents.values():
+            if yjs_doc.pending_save:
+                await self._save_to_storage(yjs_doc)
+
+    async def _auto_save_loop(self):
+        """Background task for auto-saving documents."""
+        while True:
+            try:
+                await asyncio.sleep(self._auto_save_interval)
+                await self._save_all_pending()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f'[YjsManager] Auto-save error: {e}')
+
+    async def save_to_file(self, file_path: str) -> bool:
+        """
+        Save document content to the original file.
+
+        This writes the Y.Text content to disk as a regular file.
+
+        Args:
+            file_path: Path to the document
+
+        Returns:
+            True if saved successfully
+        """
+        yjs_doc = self._documents.get(file_path)
+        if not yjs_doc:
+            return False
+
+        try:
+            content = yjs_doc.content
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            print(f'[YjsManager] Saved to file: {file_path}')
+            return True
+        except Exception as e:
+            print(f'[YjsManager] Failed to save to file {file_path}: {e}')
+            return False
+
+
+# Global instance
+_yjs_manager: Optional[YjsDocumentManager] = None
+
+
+def get_yjs_manager() -> Optional[YjsDocumentManager]:
+    """Get the global Yjs document manager."""
+    return _yjs_manager
+
+
+async def init_yjs_manager(
+    storage_dir: Optional[str] = None,
+    on_document_changed: Optional[Callable[[str, bytes], Awaitable[None]]] = None,
+) -> YjsDocumentManager:
+    """Initialize the global Yjs document manager."""
+    global _yjs_manager
+
+    _yjs_manager = YjsDocumentManager(
+        storage_dir=storage_dir,
+        on_document_changed=on_document_changed,
+    )
+    await _yjs_manager.start()
+
+    print('[YjsManager] Initialized')
+    return _yjs_manager
+
+
+async def shutdown_yjs_manager():
+    """Shutdown the global Yjs document manager."""
+    global _yjs_manager
+
+    if _yjs_manager:
+        await _yjs_manager.stop()
+        _yjs_manager = None
+        print('[YjsManager] Shutdown complete')

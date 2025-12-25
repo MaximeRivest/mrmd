@@ -1,0 +1,63 @@
+{
+  "name": "@mrmd/editor",
+  "version": "0.1.0",
+  "description": "CM6-based markdown editor with code execution",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./styles": "./dist/styles.css"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "vite demo",
+    "dev:collab": "concurrently \"pnpm run yjs-server\" \"vite demo\"",
+    "yjs-server": "npx y-websocket",
+    "build": "tsc && vite build",
+    "build:browser": "BROWSER_BUILD=true vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@codemirror/collab": "^6.1.1",
+    "@codemirror/commands": "^6.8.1",
+    "@codemirror/lang-markdown": "^6.3.2",
+    "@codemirror/language": "^6.11.3",
+    "@codemirror/language-data": "^6.5.1",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.39.4",
+    "@lezer/common": "^1.4.0",
+    "@lezer/highlight": "^1.2.3",
+    "@lezer/markdown": "^1.6.1",
+    "lib0": "^0.2.115",
+    "y-codemirror.next": "^0.3.5",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.28"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.0.16",
+    "concurrently": "^9.1.2",
+    "jsdom": "^27.3.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vite-plugin-dts": "^4.4.0",
+    "vitest": "^2.1.8",
+    "y-websocket": "^2.1.0"
+  },
+  "peerDependencies": {
+    "katex": "^0.16.9"
+  },
+  "peerDependenciesMeta": {
+    "katex": {
+      "optional": true
+    }
+  }
+}

@@ -1,0 +1,25 @@
+[project]
+name = "mrmd-ai"
+version = "0.1.0"
+description = "AI programs for MRMD editor - completions, fixes, and corrections"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "dspy>=2.6",
+    "litellm>=1.50",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+]
+
+[project.scripts]
+mrmd-ai-server = "mrmd_ai.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mrmd_ai"]

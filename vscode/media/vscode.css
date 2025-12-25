@@ -1,0 +1,235 @@
+/**
+ * mrmd VSCode Theme Integration
+ *
+ * Uses VSCode's CSS variables for seamless theme integration.
+ * This file overrides the default theme variables from main.css.
+ */
+
+:root {
+    /* Map VSCode theme variables to mrmd variables */
+    --bg: var(--vscode-editor-background);
+    --text: var(--vscode-editor-foreground);
+    --muted: var(--vscode-descriptionForeground);
+    --border: var(--vscode-panel-border, var(--vscode-widget-border, #333));
+    --accent: var(--vscode-focusBorder, var(--vscode-button-background, #0066cc));
+    --code-bg: var(--vscode-textBlockQuote-background, var(--vscode-editor-inactiveSelectionBackground));
+    --surface: var(--vscode-sideBar-background, var(--vscode-editor-background));
+
+    /* Additional VSCode mappings */
+    --input-bg: var(--vscode-input-background);
+    --input-border: var(--vscode-input-border, transparent);
+    --input-fg: var(--vscode-input-foreground);
+    --button-bg: var(--vscode-button-background);
+    --button-fg: var(--vscode-button-foreground);
+    --button-hover: var(--vscode-button-hoverBackground);
+    --selection-bg: var(--vscode-editor-selectionBackground);
+    --link-color: var(--vscode-textLink-foreground);
+}
+
+/* Override body to use VSCode background */
+body {
+    background: var(--vscode-editor-background);
+    color: var(--vscode-editor-foreground);
+    font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+    font-size: var(--vscode-font-size, 13px);
+}
+
+/* Hide the ugly default scrollbars - use VSCode style */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--vscode-scrollbarSlider-background);
+    border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+::-webkit-scrollbar-thumb:active {
+    background: var(--vscode-scrollbarSlider-activeBackground);
+}
+
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+/* Editor textarea styling */
+.editor-base {
+    background: var(--vscode-editor-background);
+    color: var(--vscode-editor-foreground);
+    font-family: var(--vscode-editor-font-family, 'Consolas', 'Monaco', monospace);
+    font-size: var(--vscode-editor-font-size, 14px);
+    line-height: var(--vscode-editor-line-height, 1.5);
+    caret-color: var(--vscode-editorCursor-foreground);
+}
+
+.editor-base::selection {
+    background: var(--vscode-editor-selectionBackground);
+}
+
+/* Bar styling */
+.bar {
+    background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+    border-bottom-color: var(--vscode-panel-border, var(--vscode-widget-border));
+}
+
+.bar button {
+    background: var(--vscode-button-secondaryBackground, transparent);
+    border-color: var(--vscode-button-secondaryBackground, var(--border));
+    color: var(--vscode-button-secondaryForeground, var(--muted));
+}
+
+.bar button:hover {
+    background: var(--vscode-button-secondaryHoverBackground, var(--surface));
+    color: var(--vscode-button-secondaryForeground, var(--text));
+}
+
+.bar button.active {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border-color: var(--vscode-button-background);
+}
+
+/* Code blocks */
+.bg-code-block {
+    background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.1));
+}
+
+.bg-output-block {
+    background: var(--vscode-textPreformat-background, rgba(127, 127, 127, 0.05));
+}
+
+/* Hint bar */
+.hint {
+    background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+    border-top-color: var(--vscode-panel-border, var(--vscode-widget-border));
+    color: var(--vscode-descriptionForeground);
+}
+
+.hint kbd {
+    background: var(--vscode-keybindingLabel-background, rgba(127, 127, 127, 0.2));
+    border-color: var(--vscode-keybindingLabel-border, transparent);
+    color: var(--vscode-keybindingLabel-foreground, var(--text));
+}
+
+/* Terminal overlay */
+#terminal-overlay {
+    background: var(--vscode-terminal-background, var(--vscode-editor-background));
+}
+
+#terminal-bar {
+    background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+    border-bottom: 1px solid var(--vscode-panel-border, var(--border));
+    color: var(--vscode-descriptionForeground);
+}
+
+#terminal-bar .session {
+    color: var(--vscode-textLink-foreground, var(--accent));
+}
+
+#terminal-bar kbd {
+    background: var(--vscode-keybindingLabel-background, rgba(127, 127, 127, 0.2));
+    color: var(--vscode-keybindingLabel-foreground, var(--text));
+}
+
+#terminal-content {
+    background: var(--vscode-terminal-background, var(--vscode-editor-background));
+    color: var(--vscode-terminal-foreground, var(--vscode-editor-foreground));
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+/* Terminal ANSI colors - use VSCode terminal colors */
+#terminal-content .ansi-red { color: var(--vscode-terminal-ansiRed, #e06c75); }
+#terminal-content .ansi-green { color: var(--vscode-terminal-ansiGreen, #98c379); }
+#terminal-content .ansi-yellow { color: var(--vscode-terminal-ansiYellow, #e5c07b); }
+#terminal-content .ansi-blue { color: var(--vscode-terminal-ansiBlue, #61afef); }
+#terminal-content .ansi-magenta { color: var(--vscode-terminal-ansiMagenta, #c678dd); }
+#terminal-content .ansi-cyan { color: var(--vscode-terminal-ansiCyan, #56b6c2); }
+#terminal-content .cursor { background: var(--vscode-terminalCursor-foreground, var(--accent)); }
+
+/* Syntax highlighting - use VSCode token colors */
+.hl-heading {
+    color: var(--vscode-symbolIcon-classForeground, #4ec9b0);
+}
+
+.hl-bold {
+    color: var(--vscode-editor-foreground);
+    font-weight: bold;
+}
+
+.hl-italic {
+    color: var(--vscode-editor-foreground);
+    font-style: italic;
+}
+
+.hl-code {
+    background: var(--vscode-textPreformat-background, rgba(127, 127, 127, 0.1));
+    color: var(--vscode-textPreformat-foreground, #ce9178);
+}
+
+.hl-link {
+    color: var(--vscode-textLink-foreground);
+}
+
+.hl-fence {
+    color: var(--vscode-descriptionForeground);
+}
+
+/* Notebook cells */
+.nb-cell {
+    border-color: var(--vscode-panel-border);
+}
+
+.nb-code {
+    background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.05));
+}
+
+.nb-output {
+    background: var(--vscode-textPreformat-background, transparent);
+    border-left-color: var(--vscode-terminal-ansiGreen, #4ec9b0);
+}
+
+.nb-code-header {
+    background: var(--vscode-sideBar-background);
+    border-bottom-color: var(--vscode-panel-border);
+}
+
+.run-btn {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+}
+
+.run-btn:hover {
+    background: var(--vscode-button-hoverBackground);
+}
+
+/* Dropdowns */
+.view-dropdown,
+.env-dropdown,
+.session-dropdown,
+.recent-dropdown {
+    background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+    border-color: var(--vscode-dropdown-border, var(--border));
+}
+
+/* Input fields */
+input[type="text"],
+select {
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border-color: var(--vscode-input-border, transparent);
+}
+
+input[type="text"]:focus,
+select:focus {
+    border-color: var(--vscode-focusBorder);
+    outline: none;
+}

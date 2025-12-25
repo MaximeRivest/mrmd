@@ -1,0 +1,19 @@
+{
+  "name": "mrmd-frontend",
+  "version": "0.1.0",
+  "description": "mrmd frontend modules",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.cjs",
+    "watch": "node build.cjs --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mrmd/editor": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0",
+    "typescript": "^5.9.3"
+  }
+}

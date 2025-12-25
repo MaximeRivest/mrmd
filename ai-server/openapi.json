@@ -1,0 +1,1359 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "mrmd-ai",
+    "description": "AI completion, correction, and fix programs for MRMD editor",
+    "version": "0.1.0",
+    "x-dspy-config": {
+      "default_model": null,
+      "programs_count": 19
+    },
+    "x-dspy-programs": [
+      {
+        "name": "CorrectAndFinishLinePredict",
+        "module_path": "mrmd_ai.modules.correct",
+        "is_forward_typed": true
+      },
+      {
+        "name": "CorrectAndFinishSectionPredict",
+        "module_path": "mrmd_ai.modules.correct",
+        "is_forward_typed": true
+      },
+      {
+        "name": "AddTypeHintsPredict",
+        "module_path": "mrmd_ai.modules.code",
+        "is_forward_typed": false
+      },
+      {
+        "name": "CompleteCodePredict",
+        "module_path": "mrmd_ai.modules.code",
+        "is_forward_typed": false
+      },
+      {
+        "name": "DocumentCodePredict",
+        "module_path": "mrmd_ai.modules.code",
+        "is_forward_typed": false
+      },
+      {
+        "name": "ExplainCodePredict",
+        "module_path": "mrmd_ai.modules.code",
+        "is_forward_typed": false
+      },
+      {
+        "name": "FormatCodePredict",
+        "module_path": "mrmd_ai.modules.code",
+        "is_forward_typed": false
+      },
+      {
+        "name": "ImproveNamesPredict",
+        "module_path": "mrmd_ai.modules.code",
+        "is_forward_typed": false
+      },
+      {
+        "name": "RefactorCodePredict",
+        "module_path": "mrmd_ai.modules.code",
+        "is_forward_typed": false
+      },
+      {
+        "name": "FixGrammarPredict",
+        "module_path": "mrmd_ai.modules.fix",
+        "is_forward_typed": true
+      },
+      {
+        "name": "FixTranscriptionPredict",
+        "module_path": "mrmd_ai.modules.fix",
+        "is_forward_typed": true
+      },
+      {
+        "name": "GetPhraseSynonymsPredict",
+        "module_path": "mrmd_ai.modules.text",
+        "is_forward_typed": false
+      },
+      {
+        "name": "GetSynonymsPredict",
+        "module_path": "mrmd_ai.modules.text",
+        "is_forward_typed": false
+      },
+      {
+        "name": "IdentifyReplacementPredict",
+        "module_path": "mrmd_ai.modules.text",
+        "is_forward_typed": false
+      },
+      {
+        "name": "ReformatMarkdownPredict",
+        "module_path": "mrmd_ai.modules.text",
+        "is_forward_typed": false
+      },
+      {
+        "name": "FinishCodeLinePredict",
+        "module_path": "mrmd_ai.modules.finish",
+        "is_forward_typed": true
+      },
+      {
+        "name": "FinishCodeSectionPredict",
+        "module_path": "mrmd_ai.modules.finish",
+        "is_forward_typed": true
+      },
+      {
+        "name": "FinishParagraphPredict",
+        "module_path": "mrmd_ai.modules.finish",
+        "is_forward_typed": true
+      },
+      {
+        "name": "FinishSentencePredict",
+        "module_path": "mrmd_ai.modules.finish",
+        "is_forward_typed": true
+      }
+    ],
+    "x-dspy-program-models": {
+      "CorrectAndFinishLinePredict": "groq:kimi-k2",
+      "CorrectAndFinishSectionPredict": "groq:kimi-k2",
+      "AddTypeHintsPredict": "groq:kimi-k2",
+      "CompleteCodePredict": "groq:kimi-k2",
+      "DocumentCodePredict": "groq:kimi-k2",
+      "ExplainCodePredict": "groq:kimi-k2",
+      "FormatCodePredict": "groq:kimi-k2",
+      "ImproveNamesPredict": "groq:kimi-k2",
+      "RefactorCodePredict": "groq:kimi-k2",
+      "FixGrammarPredict": "groq:kimi-k2",
+      "FixTranscriptionPredict": "groq:kimi-k2",
+      "GetPhraseSynonymsPredict": "groq:kimi-k2",
+      "GetSynonymsPredict": "groq:kimi-k2",
+      "IdentifyReplacementPredict": "groq:kimi-k2",
+      "ReformatMarkdownPredict": "groq:kimi-k2",
+      "FinishCodeLinePredict": "groq:kimi-k2",
+      "FinishCodeSectionPredict": "groq:kimi-k2",
+      "FinishParagraphPredict": "groq:kimi-k2",
+      "FinishSentencePredict": "groq:kimi-k2"
+    }
+  },
+  "paths": {
+    "/CorrectAndFinishLinePredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_CorrectAndFinishLinePredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectAndFinishLinePredictRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Correctandfinishlinepredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/CorrectAndFinishSectionPredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_CorrectAndFinishSectionPredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectAndFinishSectionPredictRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Correctandfinishsectionpredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/AddTypeHintsPredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_AddTypeHintsPredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Addtypehintspredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/CompleteCodePredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_CompleteCodePredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Completecodepredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/DocumentCodePredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_DocumentCodePredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Documentcodepredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ExplainCodePredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_ExplainCodePredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Explaincodepredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/FormatCodePredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_FormatCodePredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Formatcodepredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ImproveNamesPredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_ImproveNamesPredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Improvenamespredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/RefactorCodePredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_RefactorCodePredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Refactorcodepredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/FixGrammarPredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_FixGrammarPredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FixGrammarPredictRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Fixgrammarpredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/FixTranscriptionPredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_FixTranscriptionPredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FixTranscriptionPredictRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Fixtranscriptionpredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/GetPhraseSynonymsPredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_GetPhraseSynonymsPredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Getphrasesynonymspredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/GetSynonymsPredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_GetSynonymsPredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Getsynonymspredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/IdentifyReplacementPredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_IdentifyReplacementPredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Identifyreplacementpredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ReformatMarkdownPredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_ReformatMarkdownPredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Reformatmarkdownpredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/FinishCodeLinePredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_FinishCodeLinePredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinishCodeLinePredictRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Finishcodelinepredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/FinishCodeSectionPredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_FinishCodeSectionPredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinishCodeSectionPredictRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Finishcodesectionpredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/FinishParagraphPredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_FinishParagraphPredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinishParagraphPredictRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Finishparagraphpredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/FinishSentencePredict": {
+      "post": {
+        "summary": "Run Program",
+        "description": "Execute the DSPy program with given inputs.",
+        "operationId": "run_program_FinishSentencePredict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinishSentencePredictRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Run Program Finishsentencepredict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/programs": {
+      "get": {
+        "summary": "List Programs",
+        "description": "List all discovered programs and their schemas.",
+        "operationId": "list_programs_programs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "get": {
+        "summary": "Index",
+        "description": "Render the index page with a list of all programs.",
+        "operationId": "index__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ui/{program_name}": {
+      "get": {
+        "summary": "Program Page",
+        "description": "Render the program detail page.",
+        "operationId": "program_page_ui__program_name__get",
+        "parameters": [
+          {
+            "name": "program_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Program Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/{program_name}": {
+      "get": {
+        "summary": "Get Logs",
+        "description": "Get recent logs for a program.",
+        "operationId": "get_logs_api_logs__program_name__get",
+        "parameters": [
+          {
+            "name": "program_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Program Name"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CorrectAndFinishLinePredictRequest": {
+        "properties": {
+          "text_to_fix": {
+            "type": "string",
+            "title": "Text To Fix"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "local_context": {
+            "type": "string",
+            "title": "Local Context"
+          },
+          "document_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text_to_fix",
+          "content_type",
+          "local_context"
+        ],
+        "title": "CorrectAndFinishLinePredictRequest"
+      },
+      "CorrectAndFinishSectionPredictRequest": {
+        "properties": {
+          "text_to_fix": {
+            "type": "string",
+            "title": "Text To Fix"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "local_context": {
+            "type": "string",
+            "title": "Local Context"
+          },
+          "document_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text_to_fix",
+          "content_type",
+          "local_context"
+        ],
+        "title": "CorrectAndFinishSectionPredictRequest"
+      },
+      "FinishCodeLinePredictRequest": {
+        "properties": {
+          "code_before_cursor": {
+            "type": "string",
+            "title": "Code Before Cursor"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language"
+          },
+          "local_context": {
+            "type": "string",
+            "title": "Local Context"
+          },
+          "document_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code_before_cursor",
+          "language",
+          "local_context"
+        ],
+        "title": "FinishCodeLinePredictRequest"
+      },
+      "FinishCodeSectionPredictRequest": {
+        "properties": {
+          "code_before_cursor": {
+            "type": "string",
+            "title": "Code Before Cursor"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language"
+          },
+          "local_context": {
+            "type": "string",
+            "title": "Local Context"
+          },
+          "document_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code_before_cursor",
+          "language",
+          "local_context"
+        ],
+        "title": "FinishCodeSectionPredictRequest"
+      },
+      "FinishParagraphPredictRequest": {
+        "properties": {
+          "text_before_cursor": {
+            "type": "string",
+            "title": "Text Before Cursor"
+          },
+          "local_context": {
+            "type": "string",
+            "title": "Local Context"
+          },
+          "document_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text_before_cursor",
+          "local_context"
+        ],
+        "title": "FinishParagraphPredictRequest"
+      },
+      "FinishSentencePredictRequest": {
+        "properties": {
+          "text_before_cursor": {
+            "type": "string",
+            "title": "Text Before Cursor"
+          },
+          "local_context": {
+            "type": "string",
+            "title": "Local Context"
+          },
+          "document_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text_before_cursor",
+          "local_context"
+        ],
+        "title": "FinishSentencePredictRequest"
+      },
+      "FixGrammarPredictRequest": {
+        "properties": {
+          "text_to_fix": {
+            "type": "string",
+            "title": "Text To Fix"
+          },
+          "local_context": {
+            "type": "string",
+            "title": "Local Context"
+          },
+          "document_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text_to_fix",
+          "local_context"
+        ],
+        "title": "FixGrammarPredictRequest"
+      },
+      "FixTranscriptionPredictRequest": {
+        "properties": {
+          "text_to_fix": {
+            "type": "string",
+            "title": "Text To Fix"
+          },
+          "local_context": {
+            "type": "string",
+            "title": "Local Context"
+          },
+          "document_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text_to_fix",
+          "local_context"
+        ],
+        "title": "FixTranscriptionPredictRequest"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}
