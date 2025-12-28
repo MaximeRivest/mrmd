@@ -25,9 +25,10 @@ export function createImageUrlResolver(getBasePath: () => string) {
         }
 
         // Relative paths need the document base path
+        // Encode the path to prevent browser from resolving ../..
         const basePath = getBasePath();
         if (basePath) {
-            return `/api/file/relative/${url}?base=${encodeURIComponent(basePath)}`;
+            return `/api/file/relative?path=${encodeURIComponent(url)}&base=${encodeURIComponent(basePath)}`;
         }
 
         // Fallback for relative URLs without base path

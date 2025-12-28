@@ -13,6 +13,17 @@ export type {
   HoverResult,
 } from './core/config';
 
+// Code block utilities (AST-based)
+export {
+  getCodeBlocksFromAST,
+  getCodeBlockByIndex,
+  getCodeBlockAtPosition,
+  // Detection utilities (support 3+ backticks)
+  isOutputBlock,
+  isHtmlRenderedBlock,
+  extractLanguage,
+} from './core/code-blocks';
+
 // Execution
 export type {
   Executor,
@@ -24,6 +35,25 @@ export type {
 } from './execution/executor';
 export { MockExecutor } from './execution/executor';
 export { ExecutionTracker } from './execution/tracker';
+export type { FileStateCallbacks, DocumentUpdateCallbacks } from './execution/tracker';
+
+// Execution Queue
+export { ExecutionQueue, createExecutionQueue } from './execution/queue';
+export type {
+  QueuedExecution,
+  ExecutionStatus,
+  ExecutionAwarenessState,
+  QueueEvents,
+} from './execution/queue';
+
+// ANSI Processing
+export {
+  ansiToHtml,
+  stripAnsi,
+  hasAnsi,
+  processTerminalOutput,
+  ansiStyles,
+} from './execution/ansi';
 
 // IPython integration
 export type { IPythonClient, IPythonExecutorConfig } from './execution/ipython';
@@ -49,6 +79,10 @@ export {
   clearAllScripts,
   INLINE_HTML_TAGS,
 } from './widgets/html';
+export { OutputWidget, createOutputWidget, outputWidgetStyles } from './widgets/output';
+export type { OutputWidgetConfig } from './widgets/output';
+export { CellStatusWidget, getCellState, cellStatusStyles } from './widgets/cell-status';
+export type { CellState } from './widgets/cell-status';
 
 // Cells (code cell options parsing)
 export { parseCellOptions, parseRenderedOptions, serializeCellOptions } from './cells';
@@ -56,7 +90,7 @@ export type { CellOptions, HtmlCellMeta } from './cells';
 
 // Markdown
 export { markdownDecorations } from './markdown/decorations';
-export type { TrackerRef } from './markdown/decorations';
+export type { TrackerRef, QueueRef, FilePathRef } from './markdown/decorations';
 
 // Collaboration
 export {

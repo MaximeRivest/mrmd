@@ -140,7 +140,8 @@ export function initCompactMode(options = {}) {
     // Register panel contents
     // Note: 'format' panel removed - replaced by selection-triggered floating toolbar
 
-    ToolPanel.registerPanel('code', () => createCodeCellsPanel(editor), {
+    // Use getEditorFn() to get fresh editor reference when panel opens
+    ToolPanel.registerPanel('code', () => createCodeCellsPanel(getEditorFn()), {
         title: 'Code Cells',
         width: 'narrow'
     });
@@ -175,50 +176,133 @@ export function initCompactMode(options = {}) {
     });
 
     ToolPanel.registerPanel('files', () => {
-        // Quick file picker - show open files
+        // Project-organized file picker
         const wrapper = document.createElement('div');
         wrapper.className = 'quick-files-panel';
 
+        const currentProject = SessionState.getCurrentProject();
         const openFiles = SessionState.getOpenFiles();
         const activeFile = SessionState.getActiveFilePath();
+        const recentProjects = SessionState.getRecentProjects() || [];
 
-        if (openFiles.size > 0) {
-            const list = document.createElement('div');
-            list.className = 'quick-files-list';
+        // Helper to create file item
+        const createFileItem = (path, isActive, isModified) => {
+            const item = document.createElement('button');
+            item.className = 'quick-file-item' + (isActive ? ' active' : '');
+            item.innerHTML = `
+                <span class="quick-file-name">${path.split('/').pop()}</span>
+                ${isModified ? '<span class="quick-file-modified">●</span>' : ''}
+            `;
+            item.addEventListener('click', () => {
+                SessionState.emit('file-switch-requested', { path });
+                ToolPanel.close();
+            });
+            return item;
+        };
 
-            openFiles.forEach((fileData, path) => {
-                const item = document.createElement('button');
-                const isActive = path === activeFile;
-                item.className = 'quick-file-item' + (isActive ? ' active' : '');
-                item.innerHTML = `
-                    <span class="quick-file-name">${path.split('/').pop()}</span>
-                    ${fileData.modified ? '<span class="quick-file-modified">&bull;</span>' : ''}
-                `;
-                item.addEventListener('click', () => {
-                    // Set active file and close panel
-                    SessionState.setActiveFile(path);
-                    SessionState.emit('file-switch-requested', { path });
+        // Helper to create project section
+        const createProjectSection = (projectPath, projectName, files, isCurrentProject) => {
+            const section = document.createElement('div');
+            section.className = 'quick-files-project' + (isCurrentProject ? ' current' : '');
+
+            const header = document.createElement('div');
+            header.className = 'quick-files-project-header';
+            header.innerHTML = `
+                <span class="project-icon">${isCurrentProject ? '◆' : '◇'}</span>
+                <span class="project-name">${projectName}</span>
+                <span class="project-count">${files.length}</span>
+            `;
+
+            if (!isCurrentProject) {
+                header.style.cursor = 'pointer';
+                header.addEventListener('click', () => {
+                    // Switch to this project
+                    SessionState.openProject(projectPath);
                     ToolPanel.close();
                 });
-                list.appendChild(item);
+            }
+
+            section.appendChild(header);
+
+            if (isCurrentProject && files.length > 0) {
+                const list = document.createElement('div');
+                list.className = 'quick-files-list';
+                files.forEach(({ path, modified }) => {
+                    const isActive = path === activeFile;
+                    list.appendChild(createFileItem(path, isActive, modified));
+                });
+                section.appendChild(list);
+            }
+
+            return section;
+        };
+
+        // Current project with open files
+        if (currentProject) {
+            const currentFiles = [];
+            openFiles.forEach((fileData, path) => {
+                currentFiles.push({ path, modified: fileData.modified });
             });
-            wrapper.appendChild(list);
-        } else {
+            wrapper.appendChild(createProjectSection(
+                currentProject.path,
+                currentProject.name,
+                currentFiles,
+                true
+            ));
+        } else if (openFiles.size > 0) {
+            // No project but have open files (scratch)
+            const scratchSection = document.createElement('div');
+            scratchSection.className = 'quick-files-project current';
+            const list = document.createElement('div');
+            list.className = 'quick-files-list';
+            openFiles.forEach((fileData, path) => {
+                list.appendChild(createFileItem(path, path === activeFile, fileData.modified));
+            });
+            scratchSection.appendChild(list);
+            wrapper.appendChild(scratchSection);
+        }
+
+        // Recent projects (not current)
+        const otherProjects = recentProjects.filter(p =>
+            !currentProject || p.path !== currentProject.path
+        ).slice(0, 5);
+
+        if (otherProjects.length > 0) {
+            const divider = document.createElement('div');
+            divider.className = 'quick-files-divider';
+            divider.textContent = 'Recent Projects';
+            wrapper.appendChild(divider);
+
+            otherProjects.forEach(project => {
+                const savedTabs = SessionState.getSavedProjectTabs?.(project.path);
+                const fileCount = savedTabs?.tabs?.length || 0;
+                wrapper.appendChild(createProjectSection(
+                    project.path,
+                    project.name,
+                    [], // Don't show files for non-current projects
+                    false
+                ));
+            });
+        }
+
+        // Empty state
+        if (!currentProject && openFiles.size === 0 && otherProjects.length === 0) {
             const hint = document.createElement('div');
             hint.className = 'quick-files-hint';
             hint.textContent = 'No open files';
             wrapper.appendChild(hint);
-
-            // Add button to open file navigator
-            const openBtn = document.createElement('button');
-            openBtn.className = 'quick-files-open-btn';
-            openBtn.textContent = 'Browse Files...';
-            openBtn.addEventListener('click', () => {
-                ToolPanel.close();
-                FileNavigator.open();
-            });
-            wrapper.appendChild(openBtn);
         }
+
+        // Browse button
+        const openBtn = document.createElement('button');
+        openBtn.className = 'quick-files-open-btn';
+        openBtn.textContent = 'Browse Files...';
+        openBtn.addEventListener('click', () => {
+            ToolPanel.close();
+            FileNavigator.open();
+        });
+        wrapper.appendChild(openBtn);
+
         return wrapper;
     }, {
         title: 'Open Files',
@@ -475,32 +559,112 @@ function createCodeCellsPanel(editor) {
 
 /**
  * Handle code cell panel actions
+ * Directly calls editor methods and API endpoints for reliable execution.
  */
-function handleCodeCellAction(action, editor) {
+async function handleCodeCellAction(action, editor) {
+    console.log('[CodeCellsPanel] Action:', action, 'Editor:', !!editor);
+
+    if (!editor) {
+        console.error('[CodeCellsPanel] No editor available for action:', action);
+        return;
+    }
+
     switch (action) {
         case 'run-all':
-            SessionState.emit('run-all-cells');
+            if (editor.runAllCodeBlocks) {
+                console.log('[CodeCellsPanel] Running all code blocks...');
+                // Pause autosave during bulk execution to prevent race conditions
+                SessionState.emit('autosave-pause');
+                try {
+                    // Pass callback to save after each block completes
+                    await editor.runAllCodeBlocks(async (blockIndex, total) => {
+                        // Save progress after each block
+                        SessionState.emit('save-now');
+                    });
+                } finally {
+                    // Resume autosave even if execution fails
+                    SessionState.emit('autosave-resume');
+                }
+            } else {
+                console.error('[CodeCellsPanel] runAllCodeBlocks not found on editor');
+            }
             break;
         case 'run-above':
-            SessionState.emit('run-cells-above');
+            if (editor?.runCodeBlocksAbove) {
+                SessionState.emit('autosave-pause');
+                try {
+                    await editor.runCodeBlocksAbove(async () => {
+                        SessionState.emit('save-now');
+                    });
+                } finally {
+                    SessionState.emit('autosave-resume');
+                }
+            }
             break;
         case 'run-below':
-            SessionState.emit('run-cells-below');
+            if (editor?.runCodeBlocksBelow) {
+                SessionState.emit('autosave-pause');
+                try {
+                    await editor.runCodeBlocksBelow(async () => {
+                        SessionState.emit('save-now');
+                    });
+                } finally {
+                    SessionState.emit('autosave-resume');
+                }
+            }
             break;
         case 'clear-all-outputs':
-            SessionState.emit('clear-all-outputs');
+            if (editor?.clearAllOutputs) {
+                editor.clearAllOutputs();
+            }
             break;
         case 'collapse-all-outputs':
-            SessionState.emit('collapse-all-outputs');
+            // Use CodeMirror's native fold system for proper collapse behavior
+            if (editor?.foldAllOutputs) {
+                const count = editor.foldAllOutputs();
+                console.log('[CodeCellsPanel] Folded', count, 'output blocks');
+            }
             break;
         case 'expand-all-outputs':
-            SessionState.emit('expand-all-outputs');
+            // Use CodeMirror's native unfold system
+            if (editor?.unfoldAllOutputs) {
+                const count = editor.unfoldAllOutputs();
+                console.log('[CodeCellsPanel] Unfolded', count, 'output blocks');
+            }
             break;
         case 'restart-kernel':
-            SessionState.emit('restart-kernel');
+            try {
+                const response = await fetch('/api/server/restart', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                if (response.ok) {
+                    console.log('[CodeCellsPanel] Kernel restart initiated');
+                }
+            } catch (err) {
+                console.error('[CodeCellsPanel] Failed to restart kernel:', err);
+            }
             break;
         case 'interrupt-kernel':
-            SessionState.emit('interrupt-kernel');
+            // Cancel client-side executions
+            if (editor?.cancelAllExecutions) {
+                editor.cancelAllExecutions();
+                console.log('[CodeCellsPanel] Client-side executions cancelled');
+            }
+            // Also send interrupt to server (for long-running Python code)
+            try {
+                const response = await fetch('/api/ipython/interrupt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                if (response.ok) {
+                    console.log('[CodeCellsPanel] Server execution interrupted');
+                }
+            } catch (err) {
+                console.error('[CodeCellsPanel] Failed to interrupt server execution:', err);
+            }
             break;
         default:
             console.warn('[CodeCellsPanel] Unknown action:', action);

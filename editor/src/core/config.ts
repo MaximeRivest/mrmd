@@ -2,29 +2,8 @@ import type { Extension } from '@codemirror/state';
 import type { Executor } from '../execution/executor';
 import type { CollabClientAdapter } from '../collaboration/types';
 
-// ============================================================================
-// Code Block Types
-// ============================================================================
-
-/**
- * Information about a code block in the document
- */
-export interface CodeBlockInfo {
-  /** Index of the code block (0-based, excludes output blocks) */
-  index: number;
-  /** Language of the code block */
-  language: string;
-  /** Code content (without fences) */
-  code: string;
-  /** Start position of the entire block (including opening ```) */
-  start: number;
-  /** End position of the entire block (including closing ```) */
-  end: number;
-  /** Start position of the code content */
-  codeStart: number;
-  /** End position of the code content */
-  codeEnd: number;
-}
+// Re-export CodeBlockInfo from the canonical source
+export type { CodeBlockInfo } from './code-blocks';
 
 // ============================================================================
 // Code Intelligence Types

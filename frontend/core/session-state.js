@@ -15,8 +15,11 @@ let currentSession = 'default';  // DEPRECATED: Use currentSessionName instead
 let currentVenv = null;          // null = use default ~/.mrmd/venv
 let currentProject = null;       // { path, name, venv, type }
 let sessionMode = 'default';     // 'default' | 'project' | 'dedicated'
-let openFiles = new Map();       // path -> { content, modified, scrollTop }
+let openFiles = new Map();       // path -> { content, modified, scrollTop } - LEGACY: use _appState when available
 let activeFilePath = null;
+
+// AppState delegation - when set, file operations delegate to AppState (single source of truth)
+let _appState = null;
 let recentProjects = [];
 let isWelcomeMode = false;       // True when showing welcome notebook
 let welcomeContent = null;       // Cached welcome content
@@ -77,8 +80,17 @@ export function getCurrentSession() { return currentSession; }
 export function getCurrentVenv() { return currentVenv; }
 export function getCurrentProject() { return currentProject; }
 export function getSessionMode() { return sessionMode; }
-export function getOpenFiles() { return openFiles; }
-export function getActiveFilePath() { return activeFilePath; }
+export function getOpenFiles() { return _appState?.openFiles ?? openFiles; }
+export function getActiveFilePath() { return _appState?.currentFilePath ?? activeFilePath; }
+
+/**
+ * Set AppState as the single source of truth for file state.
+ * When set, all file operations delegate to AppState.
+ * @param {object} appState - The AppState instance from codes app
+ */
+export function setAppState(appState) {
+    _appState = appState;
+}
 export function getRecentProjects() { return recentProjects; }
 export function getIsWelcomeMode() { return isWelcomeMode; }
 export function getWelcomeContent() { return welcomeContent; }
@@ -171,6 +183,99 @@ async function fetchJson(url, options = {}) {
     return response.json();
 }
 
+// ==================== Project Pool (Instant Switching) ====================
+
+/**
+ * Warm a project (pre-start session, cache files)
+ * @param {string} projectPath - Path to project
+ * @param {Object} options - { name, python_path, tab_paths, active_file }
+ */
+export async function warmProject(projectPath, options = {}) {
+    try {
+        const result = await fetchJson('/api/project/warm', {
+            method: 'POST',
+            body: JSON.stringify({
+                path: projectPath,
+                name: options.name || projectPath.split('/').pop(),
+                python_path: options.python_path,
+                tab_paths: options.tab_paths || [],
+                active_file: options.active_file,
+            }),
+        });
+        console.log(`[ProjectPool] Warmed: ${projectPath}`, result);
+        return result;
+    } catch (err) {
+        console.warn('[ProjectPool] Warm failed:', err);
+        return null;
+    }
+}
+
+/**
+ * Switch to a project, getting cached data if warm
+ * @param {string} projectPath - Path to project
+ * @param {string[]} tabPaths - Paths of tabs to fetch
+ * @returns {Object} { status: 'warm'|'cold', files?, variables?, session_id? }
+ */
+export async function switchProject(projectPath, tabPaths = []) {
+    try {
+        const result = await fetchJson('/api/project/switch', {
+            method: 'POST',
+            body: JSON.stringify({
+                path: projectPath,
+                tab_paths: tabPaths,
+            }),
+        });
+        return result;
+    } catch (err) {
+        console.warn('[ProjectPool] Switch failed:', err);
+        return { status: 'cold' };
+    }
+}
+
+/**
+ * Pre-warm recent projects in background for instant switching
+ */
+export async function warmRecentProjects() {
+    if (!recentProjects || recentProjects.length === 0) {
+        return;
+    }
+
+    console.log('[ProjectPool] Pre-warming recent projects...');
+
+    // Warm up to 3 recent projects (excluding current)
+    const toWarm = recentProjects
+        .filter(p => !currentProject || p.path !== currentProject.path)
+        .slice(0, 2);  // Warm 2 others (current is already warm)
+
+    for (const project of toWarm) {
+        // Get saved tabs for this project
+        const savedTabs = getSavedProjectTabs(project.path);
+        const tabPaths = savedTabs?.tabs || [];
+
+        await warmProject(project.path, {
+            name: project.name,
+            tab_paths: tabPaths,
+            active_file: savedTabs?.active,
+        });
+
+        // Small delay to avoid overwhelming the server
+        await new Promise(r => setTimeout(r, 100));
+    }
+
+    console.log(`[ProjectPool] Warmed ${toWarm.length} recent projects`);
+}
+
+/**
+ * Check project pool status (for debugging)
+ */
+export async function getPoolStatus() {
+    try {
+        return await fetchJson('/api/project/pool/status');
+    } catch (err) {
+        return null;
+    }
+}
+
 /**
  * Check MRMD initialization status
  */
@@ -258,18 +363,25 @@ export async function openProject(projectPath, skipWarning = false, options = {}
             }
         }
 
-        // Save current project's tabs before switching
-        if (currentProject) {
+        // Save current project's tabs before switching (unless instant restore)
+        if (currentProject && !options.skipFileOpen) {
             // Emit event so UI can save current scroll position
             emit('before-project-switch', { currentProject });
             saveProjectTabs(currentProject.path);
         }
 
-        // Close all current tabs
-        closeAllFiles();
+        // Close all current tabs (skip if instant restore - file already open)
+        if (!options.skipFileOpen) {
+            closeAllFiles();
+        }
 
-        // Detect project info and find venv in parallel for faster startup
-        const [detected, venvResult] = await Promise.all([
+        // Get saved tabs for this project
+        const savedTabs = getSavedProjectTabs(projectPath);
+        const tabPaths = savedTabs?.tabs || [];
+
+        // Run project detection, venv search, AND pool check in parallel
+        // Pool check is fast (just a dict lookup on server)
+        const [detected, venvResult, poolResult] = await Promise.all([
             detectProject(projectPath),
             fetchJson('/api/venvs/search', {
                 method: 'POST',
@@ -278,7 +390,13 @@ export async function openProject(projectPath, skipWarning = false, options = {}
                 console.warn('[SessionState] Venv search failed:', err);
                 return { venvs: [] };
             }),
+            switchProject(projectPath, tabPaths).catch(() => ({ status: 'cold' })),
         ]);
+
+        const isWarm = poolResult.status === 'warm';
+        if (isWarm) {
+            console.log('[SessionState] Project is warm, using cached session');
+        }
 
         if (!detected) {
             return { success: false, message: 'Failed to detect project' };
@@ -306,8 +424,13 @@ export async function openProject(projectPath, skipWarning = false, options = {}
         currentSessionName = 'main';
         notebookSessionBindings.clear();
 
-        // Switch to project venv if found
-        if (venv) {
+        // Switch to project venv if found (skip if warm - session already running)
+        if (isWarm) {
+            // Project is warm - kernel already running from pool
+            currentVenv = venv?.python_path || null;
+            sessionMode = venv ? 'project' : 'scratch';
+            emit('kernel-ready', { session: currentSessionName, venv: currentVenv, warm: true });
+        } else if (venv) {
             currentVenv = venv.python_path;
             sessionMode = 'project';
 
@@ -324,20 +447,25 @@ export async function openProject(projectPath, skipWarning = false, options = {}
                 }),
             }).then(() => {
                 emit('kernel-ready', { session: currentSessionName, venv: venv.python_path });
+                // Warm this project for future switches
+                warmProject(currentProject.path, {
+                    name: currentProject.name,
+                    python_path: venv.python_path,
+                    tab_paths: tabPaths,
+                });
             }).catch(err => {
                 console.error('[SessionState] Kernel reconfigure error:', err);
                 emit('kernel-error', { session: currentSessionName, error: err.message });
             });
         }
 
-        // Get saved tabs for this project (from localStorage - instant!)
-        const savedTabs = getSavedProjectTabs(currentProject.path);
-
         // Emit project-opened immediately so UI can update and restore tabs
         // Pass through instant restore options so handler knows to skip/verify
+        // Include cached files from pool for instant UI
         emit('project-opened', {
             ...currentProject,
             savedTabs,
+            cachedFiles: isWarm ? poolResult.files : null,  // Cached file contents from pool
             instantRestore: options.skipActiveFileOpen ? {
                 cachedActiveFile: options.cachedActiveFile,
                 cachedMtime: options.cachedMtime,
@@ -358,6 +486,8 @@ export async function openProject(projectPath, skipWarning = false, options = {}
             }),
             loadSavedSessions(),
             loadProjectSessions(),
+            // Pre-warm other recent projects in background
+            warmRecentProjects(),
         ]).catch(err => console.error('[SessionState] Background project setup error:', err));
 
         return { success: true, project: currentProject };
@@ -942,8 +1072,19 @@ export function setRestoringTabs(value) {
 }
 
 export function addOpenFile(path, content = '', modified = false, mtime = null, versionId = null) {
-    openFiles.set(path, { content, modified, scrollTop: 0, mtime, versionId });
-    emit('files-changed', { openFiles, activeFilePath });
+    // Delegate to AppState if available (single source of truth)
+    if (_appState) {
+        // AppState.openFile handles the actual state - we just emit events
+        // Note: codes/index.ts calls appState.openFile() directly, so this may be redundant
+        // but it ensures consistency when called from legacy code
+        if (!_appState.openFiles.has(path)) {
+            _appState.openFile(path, content, { modified, mtime });
+        }
+    } else {
+        openFiles.set(path, { content, modified, scrollTop: 0, mtime, versionId });
+    }
+
+    emit('files-changed', { openFiles: getOpenFiles(), activeFilePath: getActiveFilePath() });
     // Auto-save tabs state (skip during restore to avoid overwriting saved state)
     if (currentProject && !isRestoringTabs) saveProjectTabs();
 
@@ -970,18 +1111,24 @@ export function addOpenFile(path, content = '', modified = false, mtime = null, 
 }
 
 export function updateFileMtime(path, mtime) {
-    const file = openFiles.get(path);
-    if (file) {
-        file.mtime = mtime;
+    if (_appState) {
+        _appState.updateFileMtime?.(path, mtime);
+    } else {
+        const file = openFiles.get(path);
+        if (file) {
+            file.mtime = mtime;
+        }
     }
 }
 
 export function getFileMtime(path) {
-    const file = openFiles.get(path);
+    const files = getOpenFiles();
+    const file = files.get(path);
     return file?.mtime || null;
 }
 
 export function updateFileVersionId(path, versionId) {
+    // versionId is legacy - AppState doesn't have this concept
     const file = openFiles.get(path);
     if (file) {
         file.versionId = versionId;
@@ -989,36 +1136,45 @@ export function updateFileVersionId(path, versionId) {
 }
 
 export function getFileVersionId(path) {
+    // versionId is legacy - AppState doesn't have this concept
     const file = openFiles.get(path);
     return file?.versionId || null;
 }
 
 export function removeOpenFile(path) {
-    openFiles.delete(path);
-    if (activeFilePath === path) {
-        // Switch to another file or null
-        const paths = Array.from(openFiles.keys());
-        activeFilePath = paths.length > 0 ? paths[paths.length - 1] : null;
+    if (_appState) {
+        _appState.closeFile(path);
+    } else {
+        openFiles.delete(path);
+        if (activeFilePath === path) {
+            // Switch to another file or null
+            const paths = Array.from(openFiles.keys());
+            activeFilePath = paths.length > 0 ? paths[paths.length - 1] : null;
+        }
     }
-    emit('files-changed', { openFiles, activeFilePath });
+    emit('files-changed', { openFiles: getOpenFiles(), activeFilePath: getActiveFilePath() });
     // Auto-save tabs state
     if (currentProject) saveProjectTabs();
 }
 
 export function renameOpenFile(oldPath, newPath) {
-    const file = openFiles.get(oldPath);
-    if (!file) return;
+    if (_appState) {
+        _appState.renameFile?.(oldPath, newPath);
+    } else {
+        const file = openFiles.get(oldPath);
+        if (!file) return;
 
-    // Remove old entry, add new one with same data
-    openFiles.delete(oldPath);
-    openFiles.set(newPath, file);
+        // Remove old entry, add new one with same data
+        openFiles.delete(oldPath);
+        openFiles.set(newPath, file);
 
-    // Update active file path if it was the renamed file
-    if (activeFilePath === oldPath) {
-        activeFilePath = newPath;
+        // Update active file path if it was the renamed file
+        if (activeFilePath === oldPath) {
+            activeFilePath = newPath;
+        }
     }
 
-    emit('files-changed', { openFiles, activeFilePath });
+    emit('files-changed', { openFiles: getOpenFiles(), activeFilePath: getActiveFilePath() });
     emit('file-renamed', { oldPath, newPath });
 
     // Auto-save tabs state
@@ -1026,30 +1182,43 @@ export function renameOpenFile(oldPath, newPath) {
 }
 
 export function setActiveFile(path) {
-    activeFilePath = path;
-    emit('files-changed', { openFiles, activeFilePath });
+    if (_appState) {
+        _appState.setCurrentFile(path);
+    } else {
+        activeFilePath = path;
+    }
+    emit('files-changed', { openFiles: getOpenFiles(), activeFilePath: getActiveFilePath() });
     // Auto-save tabs state (to remember active tab)
     if (currentProject) saveProjectTabs();
 }
 
 export function updateFileContent(path, content, modified = true) {
-    const file = openFiles.get(path);
-    if (file) {
-        file.content = content;
-        file.modified = modified;
-        emit('file-modified', { path, modified });
+    if (_appState) {
+        _appState.updateFileContent(path, content, modified);
+    } else {
+        const file = openFiles.get(path);
+        if (file) {
+            file.content = content;
+            file.modified = modified;
+        }
     }
+    emit('file-modified', { path, modified });
 }
 
 export function updateFileScrollTop(path, scrollTop) {
-    const file = openFiles.get(path);
-    if (file) {
-        file.scrollTop = scrollTop;
+    if (_appState) {
+        _appState.updateFileScrollTop(path, scrollTop);
+    } else {
+        const file = openFiles.get(path);
+        if (file) {
+            file.scrollTop = scrollTop;
+        }
     }
 }
 
 export function getFileScrollTop(path) {
-    const file = openFiles.get(path);
+    const files = getOpenFiles();
+    const file = files.get(path);
     return file?.scrollTop || 0;
 }
 
@@ -1060,10 +1229,14 @@ export function getFileScrollTop(path) {
  * @param {Array} redoStack - Redo stack array
  */
 export function updateFileUndoStacks(path, undoStack, redoStack) {
-    const file = openFiles.get(path);
-    if (file) {
-        file.undoStack = undoStack;
-        file.redoStack = redoStack;
+    if (_appState) {
+        _appState.updateFileUndoStacks(path, undoStack, redoStack);
+    } else {
+        const file = openFiles.get(path);
+        if (file) {
+            file.undoStack = undoStack;
+            file.redoStack = redoStack;
+        }
     }
 }
 
@@ -1073,6 +1246,9 @@ export function updateFileUndoStacks(path, undoStack, redoStack) {
  * @returns {{undoStack: Array, redoStack: Array}} Undo and redo stacks (empty arrays if not found)
  */
 export function getFileUndoStacks(path) {
+    if (_appState) {
+        return _appState.getFileUndoStacks(path);
+    }
     const file = openFiles.get(path);
     return {
         undoStack: file?.undoStack || [],
@@ -1081,20 +1257,31 @@ export function getFileUndoStacks(path) {
 }
 
 export function markFileSaved(path) {
-    const file = openFiles.get(path);
-    if (file) {
-        file.modified = false;
-        emit('file-modified', { path, modified: false });
+    if (_appState) {
+        _appState.markFileSaved(path);
+    } else {
+        const file = openFiles.get(path);
+        if (file) {
+            file.modified = false;
+        }
     }
+    emit('file-modified', { path, modified: false });
 }
 
 /**
  * Close all open files/tabs
  */
 export function closeAllFiles() {
-    openFiles.clear();
-    activeFilePath = null;
-    emit('files-changed', { openFiles, activeFilePath });
+    if (_appState) {
+        // Close all files in AppState
+        for (const path of _appState.openFiles.keys()) {
+            _appState.closeFile(path);
+        }
+    } else {
+        openFiles.clear();
+        activeFilePath = null;
+    }
+    emit('files-changed', { openFiles: getOpenFiles(), activeFilePath: getActiveFilePath() });
 }
 
 /**
@@ -1104,10 +1291,13 @@ export function saveProjectTabs(projectPath = null) {
     const path = projectPath || currentProject?.path;
     if (!path) return;
 
+    const files = getOpenFiles();
+    const activePath = getActiveFilePath();
+
     // Save tabs with their scroll positions and mtimes for cache validation
     const tabsWithScroll = {};
     const mtimes = {};
-    for (const [filePath, file] of openFiles.entries()) {
+    for (const [filePath, file] of files.entries()) {
         tabsWithScroll[filePath] = { scrollTop: file.scrollTop || 0 };
         if (file.mtime) {
             mtimes[filePath] = file.mtime;
@@ -1115,13 +1305,13 @@ export function saveProjectTabs(projectPath = null) {
     }
 
     // Cache active file content for instant restore on refresh
-    const activeFile = activeFilePath ? openFiles.get(activeFilePath) : null;
+    const activeFile = activePath ? files.get(activePath) : null;
     const activeContent = activeFile?.content || null;
     const activeMtime = activeFile?.mtime || null;
 
     const tabState = {
-        tabs: Array.from(openFiles.keys()),
-        active: activeFilePath,
+        tabs: Array.from(files.keys()),
+        active: activePath,
         scrollPositions: tabsWithScroll,
         mtimes,                         // For cache freshness validation
         cachedContent: activeContent,   // For instant display on refresh

@@ -86,24 +86,6 @@ export function destroyEditorKeybindings() {
 // ============================================================================
 
 /**
- * Find the code block containing the cursor
- */
-function getCurrentCodeBlockIndex(editor) {
-    if (!editor) return -1;
-
-    const cursor = editor.getCursor();
-    const blocks = editor.getCodeBlocks();
-
-    for (let i = 0; i < blocks.length; i++) {
-        const block = blocks[i];
-        if (cursor >= block.start && cursor <= block.end) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-/**
  * Update status display
  */
 function setStatus(text) {
@@ -114,127 +96,112 @@ function setStatus(text) {
 
 /**
  * Handle Ctrl+Enter - Run current code block
+ * Uses the same code path as clicking the run button directly.
  */
 async function handleRunCell() {
     const editor = getEditor();
     if (!editor) return;
 
-    const blockIndex = getCurrentCodeBlockIndex(editor);
-    if (blockIndex >= 0) {
+    if (editor.runCodeBlockAtCursor()) {
         setStatus('running...');
-        try {
-            await editor.runCodeBlock(blockIndex);
-            setStatus('ready');
-        } catch (err) {
-            console.error('[EditorKeybindings] Execution failed:', err);
-            setStatus('error');
-        }
+        // Status will be updated by execution completion
     }
 }
 
 /**
  * Handle Shift+Enter - Run current block and advance to next
  * If no next block exists, create a new code cell after the output block
- * so user can continue coding while execution runs
+ * so user can continue coding while execution runs.
+ *
+ * Uses AST-based block detection (not DOM) to reliably find blocks
+ * regardless of scroll position or viewport.
  */
 async function handleRunCellAdvance() {
     const editor = getEditor();
     if (!editor) return;
 
-    const blockIndex = getCurrentCodeBlockIndex(editor);
-    if (blockIndex < 0) return;
-
+    const cursor = editor.getCursor();
     const blocks = editor.getCodeBlocks();
-    const currentBlock = blocks[blockIndex];
-    const currentLang = currentBlock.language || 'python';
 
-    // Check if there's already a next code block
-    if (blockIndex + 1 < blocks.length) {
-        // Move cursor to next block first, then run execution
-        const nextBlock = blocks[blockIndex + 1];
-        const doc = editor.getDoc();
-        const afterFence = doc.indexOf('\n', nextBlock.start);
-        if (afterFence !== -1) {
-            editor.setCursor(afterFence + 1);
-        } else {
-            editor.setCursor(nextBlock.start);
+    if (blocks.length === 0) return;
+
+    // Find current block: the one containing cursor, or the last one before cursor
+    let currentIndex = -1;
+    for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
+        if (cursor >= block.start && cursor <= block.end) {
+            // Cursor is inside this block
+            currentIndex = i;
+            break;
         }
+        if (block.end < cursor) {
+            // Block is before cursor - might be current if no block contains cursor
+            currentIndex = i;
+        }
+    }
+
+    if (currentIndex < 0) return;
+
+    const currentBlock = blocks[currentIndex];
+    const nextBlock = blocks[currentIndex + 1];
+
+    if (nextBlock) {
+        // Next block exists - move cursor there, then run current
+        editor.setCursor(nextBlock.codeStart);
         editor.focus();
 
-        // Run execution in background (don't block user)
         setStatus('running...');
-        editor.runCodeBlock(blockIndex)
-            .then(() => setStatus('ready'))
-            .catch(err => {
-                console.error('[EditorKeybindings] Execution failed:', err);
-                setStatus('error');
-            });
+        editor.runCodeBlock(currentIndex);
         return;
     }
 
-    // No next block - need to create one after the output block
+    // No next block - run current and create a new one after it
     setStatus('running...');
+    editor.runCodeBlock(currentIndex);
 
-    // Start execution - this creates the output block synchronously
-    // before the async streaming begins
-    const executionPromise = editor.runCodeBlock(blockIndex);
+    // Wait for the output block to be inserted, then create new cell
+    setTimeout(() => {
+        const doc = editor.getDoc();
 
-    // The output block is now in the document (sync operation in runBlock)
-    // Find where to insert the new code block (after the output block)
-    const doc = editor.getDoc();
-    const afterCodeBlock = doc.slice(currentBlock.end);
+        // Find where to insert (after output block if it exists)
+        const afterCodeBlock = doc.slice(currentBlock.end);
+        const outputMatch = afterCodeBlock.match(/^\n```output:[^\n]*\n[\s\S]*?```/);
 
-    // Output block format: \n```output:{execId}\n```
-    // We need to find the closing ``` of the output block
-    const outputMatch = afterCodeBlock.match(/^\n```output:[^\n]*\n```/);
+        let insertPos;
+        if (outputMatch) {
+            insertPos = currentBlock.end + outputMatch[0].length;
+        } else {
+            insertPos = currentBlock.end;
+        }
 
-    let insertPos;
-    if (outputMatch) {
-        // Insert after the output block's closing fence
-        insertPos = currentBlock.end + outputMatch[0].length;
-    } else {
-        // Fallback: insert after code block (shouldn't happen normally)
-        insertPos = currentBlock.end;
-    }
+        // Create new code cell with same language
+        const newCell = `\n\n\`\`\`${currentBlock.language}\n\n\`\`\`\n`;
 
-    // Create new code cell
-    const newCell = `\n\n\`\`\`${currentLang}\n\n\`\`\`\n`;
-
-    editor.view.dispatch({
-        changes: { from: insertPos, insert: newCell }
-    });
-
-    // Position cursor inside the new cell (after opening fence)
-    // insertPos + 2 (newlines) + 3 (```) + lang.length + 1 (newline after lang)
-    const cursorPos = insertPos + 2 + 3 + currentLang.length + 1;
-    editor.setCursor(cursorPos);
-    editor.focus();
-
-    // Let execution continue in background
-    executionPromise
-        .then(() => setStatus('ready'))
-        .catch(err => {
-            console.error('[EditorKeybindings] Execution failed:', err);
-            setStatus('error');
+        editor.view.dispatch({
+            changes: { from: insertPos, insert: newCell }
         });
+
+        // Position cursor inside the new cell (after ```lang\n)
+        const cursorPos = insertPos + 2 + 3 + currentBlock.language.length + 1;
+        editor.setCursor(cursorPos);
+        editor.focus();
+    }, 50);
 }
 
 /**
  * Handle Ctrl+Shift+Enter - Run all code blocks
+ * Uses the same code path as clicking run buttons directly.
  */
 async function handleRunAll() {
     const editor = getEditor();
     if (!editor) return;
 
-    const blocks = editor.getCodeBlocks();
-    if (blocks.length === 0) return;
-
     setStatus('running all...');
     try {
-        for (let i = 0; i < blocks.length; i++) {
-            await editor.runCodeBlock(i);
+        const count = await editor.runAllCodeBlocks();
+        if (count > 0) {
+            setStatus('ready');
         }
-        setStatus('ready');
     } catch (err) {
         console.error('[EditorKeybindings] Execution failed:', err);
         setStatus('error');

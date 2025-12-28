@@ -6,7 +6,7 @@ Like links, images can use reference syntax.
 
 ![Reference image][img1]
 
-[img1]: https://via.placeholder.com/200x150 "Reference Image Title"
+[img1]: https://picsum.photos/seed/refimg1/200/150 "Reference Image Title"
 
 ## Multiple References
 
@@ -16,9 +16,9 @@ Like links, images can use reference syntax.
 
 ![Third image][icon]
 
-[logo]: https://via.placeholder.com/100x100 "Logo"
-[banner]: https://via.placeholder.com/400x100 "Banner"
-[icon]: https://via.placeholder.com/32x32 "Icon"
+[logo]: https://picsum.photos/seed/reflogo/100/100 "Logo"
+[banner]: https://picsum.photos/seed/refbanner/400/100 "Banner"
+[icon]: https://picsum.photos/seed/reficon/32/32 "Icon"
 
 ## Reusing References
 
@@ -32,4 +32,4 @@ And ![Logo][logo] appears again here.
 
 ![placeholder][]
 
-[placeholder]: https://via.placeholder.com/150x150
+[placeholder]: https://picsum.photos/seed/implicit/150/150

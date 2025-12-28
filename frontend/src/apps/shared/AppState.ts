@@ -26,6 +26,11 @@ export class AppState {
     // Open files (for tabs)
     private _openFiles: Map<string, FileState> = new Map();
 
+    // Per-file EditorState (for undo history preservation)
+    // Stored separately because EditorState is not serializable
+    // Type is 'unknown' to avoid coupling to CodeMirror types
+    private _editorStates: Map<string, unknown> = new Map();
+
     // Session state
     private _session: SessionState = {
         id: 'main',
@@ -43,7 +48,6 @@ export class AppState {
         sidebarVisible: true,
         activePanel: 'variables',
         theme: 'default',
-        zenMode: false,
     };
 
     // Listeners
@@ -115,7 +119,8 @@ export class AppState {
         };
 
         this._openFiles.set(path, file);
-        this._currentFilePath = path;
+        // Don't auto-set currentFilePath - caller should explicitly call setCurrentFile()
+        // This prevents background file opens from hijacking the current file
         this._notifyFileChange(file, path);
         return file;
     }
@@ -124,6 +129,7 @@ export class AppState {
         if (!this._openFiles.has(path)) return null;
 
         this._openFiles.delete(path);
+        this._editorStates.delete(path);  // Also clear saved editor state
 
         // If this was the current file, switch to another
         if (this._currentFilePath === path) {
@@ -172,6 +178,13 @@ export class AppState {
         }
     }
 
+    updateFileMtime(path: string, mtime: number): void {
+        const file = this._openFiles.get(path);
+        if (file) {
+            file.mtime = mtime;
+        }
+    }
+
     updateFileScrollTop(path: string, scrollTop: number): void {
         const file = this._openFiles.get(path);
         if (file) {
@@ -202,12 +215,55 @@ export class AppState {
             this._openFiles.delete(oldPath);
             this._openFiles.set(newPath, file);
 
+            // Also rename editor state
+            const editorState = this._editorStates.get(oldPath);
+            if (editorState) {
+                this._editorStates.delete(oldPath);
+                this._editorStates.set(newPath, editorState);
+            }
+
             if (this._currentFilePath === oldPath) {
                 this._currentFilePath = newPath;
             }
 
             this._notifyFileChange(file, newPath);
         }
+    }
+
+    // ========================================================================
+    // Editor State Operations (for undo history preservation)
+    // ========================================================================
+
+    /**
+     * Save the full EditorState for a file (preserves undo history, selection, etc.)
+     * Called when switching away from a file.
+     */
+    saveEditorState(path: string, editorState: unknown): void {
+        this._editorStates.set(path, editorState);
+
+        // Also sync content to FileState to keep them consistent
+        const file = this._openFiles.get(path);
+        if (file && editorState && typeof editorState === 'object' && 'doc' in editorState) {
+            const doc = (editorState as { doc: { toString: () => string } }).doc;
+            if (doc && typeof doc.toString === 'function') {
+                file.content = doc.toString();
+            }
+        }
+    }
+
+    /**
+     * Get the saved EditorState for a file.
+     * Returns null if no state was saved (first time opening file).
+     */
+    getEditorState(path: string): unknown | null {
+        return this._editorStates.get(path) ?? null;
+    }
+
+    /**
+     * Clear the saved EditorState for a file (called when file is closed).
+     */
+    clearEditorState(path: string): void {
+        this._editorStates.delete(path);
     }
 
     // ========================================================================
@@ -266,11 +322,6 @@ export class AppState {
 
     setTheme(theme: UIState['theme']): void {
         this._ui.theme = theme;
-        this._notify();
-    }
-
-    setZenMode(zenMode: boolean): void {
-        this._ui.zenMode = zenMode;
         this._notify();
     }
 

@@ -17,10 +17,15 @@ import {
   HtmlCellPlaceholder,
   InlineHTMLWidget,
   findInlineHTML,
+  CellStatusWidget,
+  getCellState,
+  OutputWidget,
 } from '../widgets';
 import { parseCellOptions, parseRenderedOptions } from '../cells/options';
 import { DEFAULT_CELL_OPTIONS } from '../cells/types';
 import type { ExecutionTracker } from '../execution/tracker';
+import type { ExecutionQueue } from '../execution/queue';
+import { isOutputBlock, isHtmlRenderedBlock, extractLanguage } from '../core/code-blocks';
 
 interface DecorationItem {
   from: number;
@@ -38,8 +43,27 @@ export interface TrackerRef {
   current: ExecutionTracker | null;
 }
 
+/**
+ * Mutable reference to ExecutionQueue
+ * Allows the queue to be set after the editor view is created
+ */
+export interface QueueRef {
+  current: ExecutionQueue | null;
+}
+
+/**
+ * Mutable reference to current file path
+ */
+export interface FilePathRef {
+  current: string | null;
+}
+
 interface MarkdownDecorationOptions {
   resolveImageUrl?: (url: string) => string;
+  /** Reference to execution queue for cell status display */
+  queueRef?: QueueRef;
+  /** Reference to current file path for queue state lookup */
+  filePathRef?: FilePathRef;
 }
 
 /**
@@ -252,41 +276,140 @@ export function markdownDecorations(
                 }
               }
 
-              const langMatch = firstLineText.match(/^```(\w+)/);
-              const lang = langMatch ? langMatch[1] : '';
-              const isOutput = lang === 'output' || firstLineText.startsWith('```output:');
-              const isHtmlRendered = firstLineText.startsWith('```html-rendered');
+              // Use shared utilities for consistent detection (supports 3+ backticks)
+              const lang = extractLanguage(firstLineText);
+              const isOutput = isOutputBlock(firstLineText);
+              const isHtmlRendered = isHtmlRenderedBlock(firstLineText);
 
-              // Add line decorations
-              for (let i = startLine.number; i <= endLine.number; i++) {
-                const line = view.state.doc.line(i);
-                items.push({
-                  from: line.from,
-                  type: 'line',
-                  class: isOutput || isHtmlRendered
-                    ? 'cm-md-output-block-line'
-                    : 'cm-md-code-block-line',
-                });
+              // Handle output blocks with ANSI rendering
+              if (isOutput) {
+                // Extract exec ID from fence (e.g., "output:exec-123" -> "exec-123")
+                const execIdMatch = firstLineText.match(/output:([^\s{]+)/);
+                const execId = execIdMatch ? execIdMatch[1] : `output-${node.from}`;
+
+                // Check if cursor is inside the output block (allows editing when focused)
+                const cursorInBlock = cursorLine >= startLine.number && cursorLine <= endLine.number;
+
+                // Check if there's content (more than just the fences)
+                const hasContentLines = endLine.number > startLine.number + 1;
+
+                if (hasContentLines && !cursorInBlock) {
+                  // Cursor NOT in block: hide content lines and show rendered widget
+                  // Add line decoration for opening fence
+                  items.push({
+                    from: startLine.from,
+                    type: 'line',
+                    class: 'cm-md-output-block-line',
+                  });
+
+                  // Hide content lines (between fences) with CSS
+                  for (let i = startLine.number + 1; i < endLine.number; i++) {
+                    const line = view.state.doc.line(i);
+                    items.push({
+                      from: line.from,
+                      type: 'line',
+                      class: 'cm-md-output-content-hidden',
+                    });
+                  }
+
+                  // Add line decoration for closing fence
+                  items.push({
+                    from: endLine.from,
+                    type: 'line',
+                    class: 'cm-md-output-block-line',
+                  });
+
+                  // Extract content for the widget (lines between fences)
+                  const contentStart = startLine.to + 1;
+                  const contentEnd = endLine.from;
+                  const content = view.state.sliceDoc(contentStart, contentEnd);
+
+                  // Add OutputWidget after opening fence line
+                  items.push({
+                    from: startLine.to,
+                    type: 'widget',
+                    widget: new OutputWidget(content, execId),
+                  });
+                } else {
+                  // Cursor IN block or no content: show raw text for editing
+                  for (let i = startLine.number; i <= endLine.number; i++) {
+                    const line = view.state.doc.line(i);
+                    items.push({
+                      from: line.from,
+                      type: 'line',
+                      class: 'cm-md-output-block-line',
+                    });
+                  }
+                }
+              } else {
+                // Non-output code blocks: add line decorations
+                for (let i = startLine.number; i <= endLine.number; i++) {
+                  const line = view.state.doc.line(i);
+                  items.push({
+                    from: line.from,
+                    type: 'line',
+                    class: isHtmlRendered
+                      ? 'cm-md-output-block-line'
+                      : 'cm-md-code-block-line',
+                  });
+                }
               }
 
-              // Add run button for executable code blocks
+              // Add run button or status widget for executable code blocks
               if (!isOutput && lang && !['text', 'markdown', 'md', 'output'].includes(lang)) {
                 // For HTML blocks, pass the parsed options
                 const cellOptions =
                   lang === 'html' ? parseCellOptions(firstLineText).options : undefined;
 
-                items.push({
-                  from: startLine.to,
-                  type: 'widget',
-                  widget: new RunButtonWidget(
-                    node.from,
-                    node.to,
-                    lang,
-                    view,
-                    trackerRef.current,
-                    cellOptions
-                  ),
-                });
+                // Check queue state to determine widget type
+                const queue = options.queueRef?.current ?? null;
+                const filePath = options.filePathRef?.current ?? '';
+                const { state: cellState, queuePosition, execId } = getCellState(
+                  queue,
+                  filePath,
+                  node.to
+                );
+
+                if (cellState !== 'idle' && queue) {
+                  // Cell is queued or running - show status widget with cancel
+                  items.push({
+                    from: startLine.to,
+                    type: 'widget',
+                    widget: new CellStatusWidget(
+                      node.from,
+                      node.to,
+                      lang,
+                      cellState,
+                      queuePosition,
+                      execId,
+                      view,
+                      queue,
+                      () => {
+                        // onRun callback - re-trigger if needed
+                        trackerRef.current?.runBlock(
+                          view.state.sliceDoc(node.from, node.to),
+                          lang,
+                          node.to,
+                          cellOptions
+                        );
+                      }
+                    ),
+                  });
+                } else {
+                  // Cell is idle - show run button
+                  items.push({
+                    from: startLine.to,
+                    type: 'widget',
+                    widget: new RunButtonWidget(
+                      node.from,
+                      node.to,
+                      lang,
+                      view,
+                      trackerRef.current,
+                      cellOptions
+                    ),
+                  });
+                }
               }
             }
 
@@ -295,12 +418,11 @@ export function markdownDecorations(
               const text = view.state.doc.sliceString(node.from, node.to);
               if (text.length >= 3) {
                 const lineText = view.state.doc.lineAt(node.from).text;
-                const isOutput = lineText.startsWith('```output');
                 items.push({
                   from: node.from,
                   to: node.to,
                   type: 'mark',
-                  class: isOutput ? 'cm-md-output-fence' : 'cm-md-code-fence',
+                  class: isOutputBlock(lineText) ? 'cm-md-output-fence' : 'cm-md-code-fence',
                 });
               }
             }
@@ -308,18 +430,38 @@ export function markdownDecorations(
             // Code language
             if (node.name === 'CodeInfo') {
               const langText = view.state.doc.sliceString(node.from, node.to);
-              const isOutput = langText === 'output' || langText.startsWith('output:');
+              // Check if langText indicates output (e.g., "output" or "output:exec-id")
+              const isOutputLang = langText === 'output' || langText.startsWith('output:');
               items.push({
                 from: node.from,
                 to: node.to,
                 type: 'mark',
-                class: isOutput ? 'cm-md-output-fence' : 'cm-md-code-lang',
+                class: isOutputLang ? 'cm-md-output-fence' : 'cm-md-code-lang',
               });
             }
 
             // Links
             if (node.name === 'Link') {
+              // Check if this link contains an image (linked image: [![alt](img)](url))
+              // If so, skip - the Image handler will handle the entire syntax
               const cursor = node.node.cursor();
+              let containsImage = false;
+              if (cursor.firstChild()) {
+                do {
+                  if (cursor.name === 'Image') {
+                    containsImage = true;
+                    break;
+                  }
+                } while (cursor.nextSibling());
+              }
+
+              if (containsImage) {
+                // Skip link processing - Image handler will handle everything
+                return;
+              }
+
+              // Process regular links
+              cursor.moveTo(node.from); // Reset cursor
               if (cursor.firstChild()) {
                 do {
                   const childLine = view.state.doc.lineAt(cursor.from).number;
@@ -402,33 +544,39 @@ export function markdownDecorations(
                 } while (cursor.nextSibling());
               }
 
+              // Check if this image is inside a link (linked image: [![alt](img)](url))
+              const parent = node.node.parent;
+              const isLinkedImage = parent?.name === 'Link';
+              const syntaxEnd = isLinkedImage ? parent.to : node.to;
+              const syntaxStart = isLinkedImage ? parent.from : node.from;
+
               if (isActiveLine) {
                 // Show full syntax when editing
                 items.push({
-                  from: node.from,
-                  to: node.to,
+                  from: syntaxStart,
+                  to: syntaxEnd,
                   type: 'mark',
                   class: 'cm-md-widget-syntax',
                 });
               } else {
                 // Replace with compact placeholder when not editing
                 items.push({
-                  from: node.from,
-                  to: node.to,
+                  from: syntaxStart,
+                  to: syntaxEnd,
                   type: 'replace',
-                  widget: new ImageSyntaxPlaceholder(imageAlt, imageUrl),
+                  widget: new ImageSyntaxPlaceholder(imageAlt, imageUrl, isLinkedImage),
                 });
               }
 
-              // Always show rendered image below
+              // Always show rendered image below (after full syntax including link wrapper)
               if (imageUrl) {
                 const resolvedImageUrl = resolveImageUrl
                   ? resolveImageUrl(imageUrl)
                   : imageUrl;
                 items.push({
-                  from: node.to,
+                  from: syntaxEnd,
                   type: 'widget',
-                  widget: new ImageWidget(resolvedImageUrl, imageAlt),
+                  widget: new ImageWidget(resolvedImageUrl, imageAlt, isLinkedImage),
                 });
               }
             }

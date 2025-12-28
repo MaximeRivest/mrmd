@@ -10,6 +10,7 @@ import * as TerminalOverlay from './terminal-overlay.js';
 let statusEl = null;
 let kernelDot = null;
 let serverDot = null;
+let fileIndicator = null;
 let lineNumber = null;
 let branchName = null;
 let terminalIndicator = null;
@@ -26,6 +27,7 @@ export function createCompactStatus() {
             <span class="status-dot kernel-dot offline" title="Kernel status"></span>
             <span class="status-dot server-dot offline" title="Server status"></span>
         </div>
+        <span class="status-file-indicator" title="Current file"></span>
         <span class="status-divider">|</span>
         <span class="status-line">Ln <code class="line-num">1</code></span>
         <span class="status-branch"></span>
@@ -37,9 +39,16 @@ export function createCompactStatus() {
 
     kernelDot = statusEl.querySelector('.kernel-dot');
     serverDot = statusEl.querySelector('.server-dot');
+    fileIndicator = statusEl.querySelector('.status-file-indicator');
     lineNumber = statusEl.querySelector('.line-num');
     branchName = statusEl.querySelector('.status-branch');
     terminalIndicator = statusEl.querySelector('.status-terminal-btn');
+
+    // Listen for file changes
+    SessionState.on('files-changed', updateFileIndicator);
+
+    // Initialize with current file
+    updateFileIndicator();
 
     // Event listeners
     const moreBtn = statusEl.querySelector('.status-more-btn');
@@ -161,6 +170,33 @@ function updateServerStatus({ status }) {
 }
 
 /**
+ * Update file indicator with current file name
+ */
+function updateFileIndicator() {
+    if (!fileIndicator) return;
+
+    const activeFile = SessionState.getActiveFilePath();
+    const project = SessionState.getCurrentProject();
+
+    if (activeFile) {
+        const filename = activeFile.split('/').pop();
+        const isModified = SessionState.getOpenFiles()?.get(activeFile)?.modified;
+
+        // Show project name and filename
+        let display = filename;
+        if (project) {
+            display = `${project.name} / ${filename}`;
+        }
+
+        fileIndicator.textContent = display + (isModified ? ' ●' : '');
+        fileIndicator.title = activeFile;
+    } else {
+        fileIndicator.textContent = '';
+        fileIndicator.title = 'No file open';
+    }
+}
+
+/**
  * Update line number
  */
 export function setLineNumber(line) {
@@ -216,6 +252,7 @@ export function getElement() {
 export function destroy() {
     SessionState.off('kernel-status', updateKernelStatus);
     SessionState.off('server-status', updateServerStatus);
+    SessionState.off('files-changed', updateFileIndicator);
 
     if (statusEl && statusEl.parentNode) {
         statusEl.parentNode.removeChild(statusEl);
@@ -224,6 +261,7 @@ export function destroy() {
     statusEl = null;
     kernelDot = null;
     serverDot = null;
+    fileIndicator = null;
     lineNumber = null;
     branchName = null;
 }

@@ -7,25 +7,26 @@ import { WidgetType } from '@codemirror/view';
 export class ImageSyntaxPlaceholder extends WidgetType {
   constructor(
     readonly alt: string,
-    readonly url: string
+    readonly url: string,
+    readonly isLinked: boolean = false
   ) {
     super();
   }
 
   eq(other: ImageSyntaxPlaceholder): boolean {
-    return other.alt === this.alt && other.url === this.url;
+    return other.alt === this.alt && other.url === this.url && other.isLinked === this.isLinked;
   }
 
   toDOM(): HTMLElement {
     const span = document.createElement('span');
     span.className = 'cm-image-syntax-placeholder';
 
-    // Determine icon based on URL type
-    let icon = '🖼';
+    // Determine icon based on URL type and link status
+    let icon = this.isLinked ? '🔗🖼' : '🖼';
     if (this.url.startsWith('data:image/svg') || this.url.endsWith('.svg')) {
-      icon = '◇'; // SVG indicator
+      icon = this.isLinked ? '🔗◇' : '◇'; // SVG indicator
     } else if (this.url.startsWith('data:')) {
-      icon = '📷'; // Embedded image
+      icon = this.isLinked ? '🔗📷' : '📷'; // Embedded image
     }
 
     // Show icon + truncated alt text
@@ -35,7 +36,9 @@ export class ImageSyntaxPlaceholder extends WidgetType {
       : displayText;
 
     span.textContent = `${icon} ${truncated}`;
-    span.title = `Image: ${this.alt}\nClick to edit`;
+    span.title = this.isLinked
+      ? `Linked Image: ${this.alt}\nClick to edit`
+      : `Image: ${this.alt}\nClick to edit`;
 
     return span;
   }
@@ -51,18 +54,22 @@ export class ImageSyntaxPlaceholder extends WidgetType {
 export class ImageWidget extends WidgetType {
   constructor(
     readonly url: string,
-    readonly alt: string
+    readonly alt: string,
+    readonly isLinked: boolean = false
   ) {
     super();
   }
 
   eq(other: ImageWidget): boolean {
-    return other.url === this.url && other.alt === this.alt;
+    return other.url === this.url && other.alt === this.alt && other.isLinked === this.isLinked;
   }
 
   toDOM(): HTMLElement {
     const container = document.createElement('div');
     container.className = 'cm-image-widget cm-image-loading';
+    if (this.isLinked) {
+      container.classList.add('cm-image-linked');
+    }
     container.textContent = 'Loading image...';
 
     const img = document.createElement('img');
@@ -70,6 +77,9 @@ export class ImageWidget extends WidgetType {
 
     img.onload = () => {
       container.className = 'cm-image-widget';
+      if (this.isLinked) {
+        container.classList.add('cm-image-linked');
+      }
       container.textContent = '';
       container.appendChild(img);
     };

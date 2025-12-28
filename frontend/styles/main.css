@@ -2423,6 +2423,9 @@ body {
     /* ANSI-styled output */
 }
 
+/* Output folding is handled by CodeMirror's native fold system */
+/* See editor.foldAllOutputs() and editor.unfoldAllOutputs() */
+
 .output-text {
     color: var(--text);
 }
@@ -4750,54 +4753,6 @@ html, body {
 }
 
 /* ============================================================================
- * ZEN MODE
- * ============================================================================ */
-
-.container.zen-mode .sidebar,
-.container.zen-mode .sidebar-resizer {
-    width: 0;
-    min-width: 0;
-    overflow: hidden;
-    opacity: 0;
-    border: none;
-}
-
-.container.zen-mode .editor-pane {
-    border-right: none;
-    max-width: 800px;
-    margin: 0 auto;
-}
-
-.container.zen-mode .status-bar {
-    display: none;
-}
-
-.container.zen-mode .editor-pane h3 {
-    display: none;
-}
-
-.container.zen-mode #file-tabs-container {
-    display: none;
-}
-
-.container.zen-mode .heading-minimap {
-    display: none;
-}
-
-/* View mode group in status bar */
-.view-mode-group {
-    display: flex;
-    gap: 4px;
-}
-
-/* Zen mode active state for the button */
-.container.zen-mode ~ .status-bar #zen-toggle,
-.zen-mode #zen-toggle {
-    color: var(--accent);
-    border-color: var(--accent);
-}
-
-/* ============================================================================
  * STATUS BAR
  * ============================================================================ */
 
@@ -6301,6 +6256,15 @@ html, body {
     50% { opacity: 0.5; }
 }
 
+.status-file-indicator {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .compact-status-spacer {
     flex: 1;
 }
@@ -7298,6 +7262,64 @@ html, body {
     background: var(--bg);
     border-color: var(--accent);
     color: var(--accent);
+}
+
+/* Project sections in files panel */
+.quick-files-project {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.quick-files-project-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+}
+
+.quick-files-project.current .quick-files-project-header {
+    background: var(--bg-subtle);
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.quick-files-project:not(.current) .quick-files-project-header:hover {
+    background: var(--bg-subtle);
+    color: var(--text-primary);
+}
+
+.quick-files-project-header .project-icon {
+    font-size: 10px;
+    opacity: 0.7;
+}
+
+.quick-files-project-header .project-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.quick-files-project-header .project-count {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    background: var(--bg);
+    padding: 2px 6px;
+    border-radius: var(--radius-full);
+}
+
+.quick-files-divider {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: var(--space-2) var(--space-3);
+    margin-top: var(--space-2);
+    border-top: 1px solid var(--border);
 }
 
 /* --- Compact Mode Document Canvas --- */

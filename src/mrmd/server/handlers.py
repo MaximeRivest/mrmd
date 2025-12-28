@@ -19,6 +19,7 @@ from .utils import strip_ansi, format_execution_result, handle_progress_output
 from . import environment
 from .history import get_history_manager
 from .jobs import get_job_manager, JobStatus, JobType
+from .project_pool import get_project_pool, init_project_pool
 
 
 def setup_http_routes(app: web.Application, ai_port: int = 51790):
@@ -121,6 +122,7 @@ def setup_http_routes(app: web.Application, ai_port: int = 51790):
     app.router.add_post("/api/file/mtimes", handle_file_mtimes)
     app.router.add_get("/api/file/asset/{path:.*}", handle_file_asset)
     app.router.add_get("/api/file/relative/{path:.*}", handle_file_relative)
+    app.router.add_get("/api/file/relative", handle_file_relative)  # Query param version
 
     # Project detection
     app.router.add_post("/api/project/detect", handle_project_detect)
@@ -159,6 +161,11 @@ def setup_http_routes(app: web.Application, ai_port: int = 51790):
     app.router.add_post("/api/project/create", handle_project_create)
     app.router.add_post("/api/project/notebooks", handle_project_notebooks)
     app.router.add_post("/api/venvs/search", handle_venvs_search)
+
+    # Project pool (instant switching)
+    app.router.add_post("/api/project/switch", handle_project_switch)
+    app.router.add_post("/api/project/warm", handle_project_warm)
+    app.router.add_get("/api/project/pool/status", handle_project_pool_status)
 
     # Welcome content
     app.router.add_get("/api/mrmd/welcome", handle_mrmd_welcome)
@@ -1064,17 +1071,19 @@ async def handle_file_asset(request: web.Request) -> web.Response:
 async def handle_file_relative(request: web.Request) -> web.Response:
     """Serve a file relative to a base path (for markdown image references).
 
-    The relative path comes from the URL, and the base path comes from
-    the 'base' query parameter (typically the directory of the markdown file).
+    The relative path can come from URL path segment OR 'path' query parameter.
+    The base path comes from the 'base' query parameter.
 
-    Example:
+    Examples:
         GET /api/file/relative/.mrmd/assets/figure.png?base=/home/user/project
-        -> Serves /home/user/project/.mrmd/assets/figure.png
+        GET /api/file/relative?path=../../.mrmd/assets/figure.png&base=/home/user/docs
+        -> Serves the resolved file
     """
     import mimetypes
 
     try:
-        relative_path = request.match_info.get("path", "")
+        # Support both path segment and query parameter
+        relative_path = request.match_info.get("path", "") or request.query.get("path", "")
         base_path = request.query.get("base", "")
 
         if not relative_path:
@@ -2858,6 +2867,134 @@ async def handle_venvs_search(request: web.Request) -> web.Response:
         return web.json_response({"venvs": venvs, "root": root})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=400)
+
+
+# ==================== Project Pool (Instant Switching) ====================
+
+
+async def handle_project_switch(request: web.Request) -> web.Response:
+    """
+    Switch to a project, returning cached data if warm.
+
+    This is a FAST path - only returns already-cached data.
+    No file I/O is done here to keep it instant.
+
+    Request: { path, tab_paths?, active_file? }
+    Response: {
+        status: "warm" | "cold",
+        session_id,
+        files: { path: { content, mtime } },
+        variables: [...],
+        active_file
+    }
+    """
+    try:
+        data = await request.json()
+        project_path = data.get("path")
+        active_file = data.get("active_file")
+
+        if not project_path:
+            return web.json_response({"error": "path required"}, status=400)
+
+        # Get the project pool
+        pool = get_project_pool()
+
+        # Ensure pool has IPython manager
+        if not pool.ipython_manager:
+            ipython_manager = get_ipython_manager(request)
+            pool.set_ipython_manager(ipython_manager)
+
+        # Try to get warm project (instant - just a dict lookup)
+        project = pool.switch_to(project_path)
+
+        if project:
+            # Project is warm - return ONLY already-cached data (no I/O!)
+            files = {}
+            for file_path, cached in project.open_files.items():
+                files[file_path] = {
+                    "content": cached.content,
+                    "mtime": cached.mtime,
+                }
+
+            return web.json_response({
+                "status": "warm",
+                "session_id": project.session_id,
+                "files": files,
+                "variables": project.variables,
+                "active_file": active_file or project.active_file,
+            })
+
+        # Project is cold - return immediately
+        return web.json_response({
+            "status": "cold",
+        })
+
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_project_warm(request: web.Request) -> web.Response:
+    """
+    Pre-warm a project (start session, cache files).
+
+    Request: { path, name, python_path?, tab_paths?, active_file? }
+    Response: { status, session_id, cached_files }
+
+    NOTE: This runs blocking operations in a thread pool to not block the event loop.
+    """
+    try:
+        data = await request.json()
+        project_path = data.get("path")
+        name = data.get("name", Path(project_path).name if project_path else "Unknown")
+        python_path = data.get("python_path")
+        tab_paths = data.get("tab_paths", [])
+        active_file = data.get("active_file")
+
+        if not project_path:
+            return web.json_response({"error": "path required"}, status=400)
+
+        # Auto-detect Python if not provided
+        if not python_path:
+            python_path = environment.get_project_venv_python(project_path)
+            if not python_path:
+                python_path = sys.executable
+
+        # Get the project pool
+        pool = get_project_pool()
+
+        # Ensure pool has IPython manager
+        if not pool.ipython_manager:
+            ipython_manager = get_ipython_manager(request)
+            pool.set_ipython_manager(ipython_manager)
+
+        # Run blocking warm operation in thread pool
+        loop = asyncio.get_event_loop()
+        project = await loop.run_in_executor(
+            None,  # Use default executor
+            lambda: pool.warm_project(
+                project_path=project_path,
+                name=name,
+                python_path=python_path,
+                tab_paths=tab_paths,
+                active_file=active_file,
+            )
+        )
+
+        return web.json_response({
+            "status": "warmed",
+            "session_id": project.session_id,
+            "cached_files": len(project.open_files),
+            "python_path": python_path,
+        })
+
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_project_pool_status(request: web.Request) -> web.Response:
+    """Get project pool status (for debugging)."""
+    pool = get_project_pool()
+    return web.json_response(pool.get_status())
 
 
 async def handle_mrmd_welcome(request: web.Request) -> web.Response:

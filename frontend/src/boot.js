@@ -26,6 +26,10 @@ var init_AppState = __esm({
         __publicField(this, "_currentFilePath", null);
         // Open files (for tabs)
         __publicField(this, "_openFiles", /* @__PURE__ */ new Map());
+        // Per-file EditorState (for undo history preservation)
+        // Stored separately because EditorState is not serializable
+        // Type is 'unknown' to avoid coupling to CodeMirror types
+        __publicField(this, "_editorStates", /* @__PURE__ */ new Map());
         // Session state
         __publicField(this, "_session", {
           id: "main",
@@ -40,8 +44,7 @@ var init_AppState = __esm({
         __publicField(this, "_ui", {
           sidebarVisible: true,
           activePanel: "variables",
-          theme: "default",
-          zenMode: false
+          theme: "default"
         });
         // Listeners
         __publicField(this, "_listeners", /* @__PURE__ */ new Set());
@@ -100,7 +103,6 @@ var init_AppState = __esm({
           ...options
         };
         this._openFiles.set(path, file);
-        this._currentFilePath = path;
         this._notifyFileChange(file, path);
         return file;
       }
@@ -108,6 +110,7 @@ var init_AppState = __esm({
         if (!this._openFiles.has(path))
           return null;
         this._openFiles.delete(path);
+        this._editorStates.delete(path);
         if (this._currentFilePath === path) {
           const remaining = Array.from(this._openFiles.keys());
           this._currentFilePath = remaining.length > 0 ? remaining[remaining.length - 1] : null;
@@ -148,6 +151,12 @@ var init_AppState = __esm({
           this._notifyFileChange(file, path);
         }
       }
+      updateFileMtime(path, mtime) {
+        const file = this._openFiles.get(path);
+        if (file) {
+          file.mtime = mtime;
+        }
+      }
       updateFileScrollTop(path, scrollTop) {
         const file = this._openFiles.get(path);
         if (file) {
@@ -174,11 +183,46 @@ var init_AppState = __esm({
           file.path = newPath;
           this._openFiles.delete(oldPath);
           this._openFiles.set(newPath, file);
+          const editorState = this._editorStates.get(oldPath);
+          if (editorState) {
+            this._editorStates.delete(oldPath);
+            this._editorStates.set(newPath, editorState);
+          }
           if (this._currentFilePath === oldPath) {
             this._currentFilePath = newPath;
           }
           this._notifyFileChange(file, newPath);
         }
+      }
+      // ========================================================================
+      // Editor State Operations (for undo history preservation)
+      // ========================================================================
+      /**
+       * Save the full EditorState for a file (preserves undo history, selection, etc.)
+       * Called when switching away from a file.
+       */
+      saveEditorState(path, editorState) {
+        this._editorStates.set(path, editorState);
+        const file = this._openFiles.get(path);
+        if (file && editorState && typeof editorState === "object" && "doc" in editorState) {
+          const doc = editorState.doc;
+          if (doc && typeof doc.toString === "function") {
+            file.content = doc.toString();
+          }
+        }
+      }
+      /**
+       * Get the saved EditorState for a file.
+       * Returns null if no state was saved (first time opening file).
+       */
+      getEditorState(path) {
+        return this._editorStates.get(path) ?? null;
+      }
+      /**
+       * Clear the saved EditorState for a file (called when file is closed).
+       */
+      clearEditorState(path) {
+        this._editorStates.delete(path);
       }
       // ========================================================================
       // Session Operations
@@ -227,10 +271,6 @@ var init_AppState = __esm({
         this._ui.theme = theme;
         this._notify();
       }
-      setZenMode(zenMode) {
-        this._ui.zenMode = zenMode;
-        this._notify();
-      }
       // ========================================================================
       // Subscriptions
       // ========================================================================
@@ -277,7 +317,7 @@ function createImageUrlResolver(getBasePath) {
     }
     const basePath = getBasePath();
     if (basePath) {
-      return `/api/file/relative/${url}?base=${encodeURIComponent(basePath)}`;
+      return `/api/file/relative?path=${encodeURIComponent(url)}&base=${encodeURIComponent(basePath)}`;
     }
     console.warn("[imageUrl] No base path for relative URL:", url);
     return `/api/file/asset/${url}`;
@@ -1185,6 +1225,7 @@ async function mount(svc, options = {}) {
   console.log(`[Atelier] Mounting in ${modeName} mode (${defaultMode})...`);
   services = svc;
   SessionState2.setInterfaceMode(defaultMode);
+  SessionState2.setAppState(appState);
   noCollab = new URLSearchParams(window.location.search).has("noCollab");
   initDOMReferences();
   initClients();
@@ -1260,6 +1301,15 @@ function initEditor() {
   });
   setContent("", true);
   rawTextarea.value = "";
+  if (editor.tracker) {
+    editor.tracker.setFileCallbacks({
+      getCurrentFilePath: () => appState.currentFilePath,
+      getFileContent: (path) => appState.openFiles.get(path)?.content ?? null,
+      updateFileContent: (path, content) => {
+        appState.updateFileContent(path, content, true);
+      }
+    });
+  }
   initSelectionToolbar(container, {
     getContent: () => editor.getDoc(),
     getSelectionInfo: () => getSelectionInfo(),
@@ -1343,6 +1393,7 @@ async function initUIModules() {
       onBeforeClose: handleBeforeTabClose,
       onTabClose: handleTabClose
     });
+    fileTabsContainer.appendChild(fileTabs.element);
   }
   const notificationBadge = document.getElementById("notification-badge");
   if (notificationBadge) {
@@ -1449,6 +1500,9 @@ async function initCollaboration() {
   collab.onConnected((info) => {
     console.log("[Collab] Connected:", info.session_id);
     stopPollingFallback();
+    for (const path of appState.openFiles.keys()) {
+      collab.watchFile(path);
+    }
   });
   collab.onDisconnected(() => {
     console.log("[Collab] Disconnected");
@@ -1481,6 +1535,19 @@ function setupEventHandlers() {
   });
   SessionState2.on("file-saved", (path) => {
     fileTabs?.updateTabModified(path, false);
+  });
+  let resumeAutosave = null;
+  SessionState2.on("autosave-pause", () => {
+    resumeAutosave = pauseAutosave();
+  });
+  SessionState2.on("autosave-resume", () => {
+    if (resumeAutosave) {
+      resumeAutosave();
+      resumeAutosave = null;
+    }
+  });
+  SessionState2.on("save-now", async () => {
+    await saveCurrentFileNow();
   });
   SessionState2.on("project-opened", handleProjectOpened);
   SessionState2.on("project-created", handleProjectCreated);
@@ -1587,13 +1654,29 @@ function initVariablesPanel() {
   document.addEventListener("mrmd:execution-complete", (event) => {
     console.log("[Codes] Execution complete event - refreshing variables panel");
     VariablesPanel.refresh();
+    updateTabRunningStates();
   });
+  document.addEventListener("mrmd:execution-start", () => {
+    updateTabRunningStates();
+  });
+}
+function updateTabRunningStates() {
+  if (!fileTabs || !editor.tracker)
+    return;
+  const runningFiles = editor.tracker.getRunningFiles();
+  fileTabs.updateAllRunningStates(runningFiles);
 }
 async function openFile(path, options = {}) {
   const loadId = ++currentFileLoadId;
-  console.log("[Codes] Opening file:", path, options, `(loadId: ${loadId})`);
+  console.log("[Codes] Opening file:", path, options.cachedContent ? "(from cache)" : "", `(loadId: ${loadId})`);
   try {
-    const file = await services.documents.openFile(path);
+    let file;
+    if (options.cachedContent !== void 0) {
+      file = { content: options.cachedContent, mtime: options.cachedMtime };
+      console.log("[Codes] Using cached content for:", path);
+    } else {
+      file = await services.documents.openFile(path);
+    }
     if (loadId !== currentFileLoadId && !options.background) {
       console.log("[Codes] Skipping stale file load:", path, `(loadId: ${loadId}, current: ${currentFileLoadId})`);
       return;
@@ -1602,6 +1685,9 @@ async function openFile(path, options = {}) {
       mtime: file.mtime ?? null,
       modified: false
     });
+    if (services.collaboration.isConnected) {
+      services.collaboration.watchFile(path);
+    }
     const filename = path.split("/").pop() || path;
     fileTabs?.addTab(path, filename, false);
     if (!options.background) {
@@ -1610,7 +1696,9 @@ async function openFile(path, options = {}) {
         return;
       }
       appState.setCurrentFile(path);
+      SessionState2.setActiveFile(path);
       fileTabs?.setActiveTab(path);
+      editor.setFilePath(path);
       setContent(file.content, true);
       rawTextarea.value = file.content;
       document.title = `${filename} - MRMD`;
@@ -1631,39 +1719,76 @@ async function openFile(path, options = {}) {
   }
 }
 function scheduleAutosave() {
-  const currentPath = appState.currentFilePath;
-  if (!currentPath || !appState.isModified)
+  if (autosavePaused)
+    return;
+  const fileToSave = appState.currentFilePath;
+  if (!fileToSave || !appState.isModified)
     return;
   if (autosaveTimer) {
     clearTimeout(autosaveTimer);
   }
   if (Date.now() - lastSaveTime > AUTOSAVE_MAX_INTERVAL) {
-    doAutosave();
+    doAutosaveForFile(fileToSave);
     return;
   }
-  autosaveTimer = setTimeout(doAutosave, AUTOSAVE_DELAY);
+  autosaveTimer = setTimeout(() => doAutosaveForFile(fileToSave), AUTOSAVE_DELAY);
 }
-async function doAutosave() {
-  const currentPath = appState.currentFilePath;
-  if (!currentPath || !appState.isModified)
+function pauseAutosave() {
+  autosavePaused = true;
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer);
+    autosaveTimer = null;
+  }
+  console.log("[Autosave] Paused");
+  return () => {
+    autosavePaused = false;
+    console.log("[Autosave] Resumed");
+    scheduleAutosave();
+  };
+}
+async function saveCurrentFileNow() {
+  const filePath = appState.currentFilePath;
+  if (!filePath)
     return;
-  console.log("[Autosave] Saving", currentPath);
-  execStatusEl.textContent = "autosaving...";
+  const file = appState.openFiles.get(filePath);
+  if (!file)
+    return;
   try {
-    const content = getContent();
-    await services.documents.saveFile(currentPath, content, { message: "autosave" });
-    appState.markFileSaved(currentPath);
+    await services.documents.saveFile(filePath, file.content, { message: "execution" });
+    appState.markFileSaved(filePath);
     lastSaveTime = Date.now();
     updateFileIndicator();
-    execStatusEl.textContent = "autosaved";
-    setTimeout(() => {
-      if (execStatusEl.textContent === "autosaved") {
-        execStatusEl.textContent = "ready";
-      }
-    }, 1e3);
   } catch (err) {
-    console.error("[Autosave] Failed:", err);
-    execStatusEl.textContent = "autosave failed";
+    console.error("[Save] Failed:", err);
+  }
+}
+async function doAutosaveForFile(filePath) {
+  const file = appState.openFiles.get(filePath);
+  if (!file?.modified)
+    return;
+  console.log("[Autosave] Saving", filePath);
+  const isCurrentFile = appState.currentFilePath === filePath;
+  if (isCurrentFile) {
+    execStatusEl.textContent = "autosaving...";
+  }
+  try {
+    await services.documents.saveFile(filePath, file.content, { message: "autosave" });
+    appState.markFileSaved(filePath);
+    lastSaveTime = Date.now();
+    if (appState.currentFilePath === filePath) {
+      updateFileIndicator();
+      execStatusEl.textContent = "autosaved";
+      setTimeout(() => {
+        if (execStatusEl.textContent === "autosaved") {
+          execStatusEl.textContent = "ready";
+        }
+      }, 1e3);
+    }
+  } catch (err) {
+    console.error("[Autosave] Failed for", filePath, ":", err);
+    if (appState.currentFilePath === filePath) {
+      execStatusEl.textContent = "autosave failed";
+    }
   }
 }
 async function createNewNotebook(projectPath, initialContent) {
@@ -1687,14 +1812,27 @@ async function createNewNotebook(projectPath, initialContent) {
 }
 async function handleTabSelect(path) {
   const currentPath = appState.currentFilePath;
-  if (currentPath) {
+  if (currentPath && currentPath !== path) {
+    if (autosaveTimer) {
+      clearTimeout(autosaveTimer);
+      autosaveTimer = null;
+    }
+    appState.saveEditorState(currentPath, editor.view.state);
     appState.updateFileScrollTop(currentPath, container.scrollTop);
   }
   const file = appState.openFiles.get(path);
   if (file) {
-    setContent(file.content, true);
-    rawTextarea.value = file.content;
+    const savedState = appState.getEditorState(path);
+    if (savedState) {
+      editor.view.setState(savedState);
+      rawTextarea.value = file.content;
+    } else {
+      setContent(file.content, true);
+      rawTextarea.value = file.content;
+    }
     appState.setCurrentFile(path);
+    SessionState2.setActiveFile(path);
+    editor.setFilePath(path);
     updateFileIndicator();
     const filename = path.split("/").pop() || path;
     document.title = `${filename} - MRMD`;
@@ -1720,6 +1858,9 @@ async function handleBeforeTabClose(path) {
 }
 async function handleTabClose(path) {
   terminalTabs?.closeTerminalsForFile(path);
+  if (services.collaboration.isConnected) {
+    services.collaboration.unwatchFile(path);
+  }
   const newActivePath = appState.closeFile(path);
   if (newActivePath) {
     await handleTabSelect(newActivePath);
@@ -1764,12 +1905,21 @@ async function handleProjectOpened(project) {
     console.log("[Codes] Skipping file open (already opened)");
     return;
   }
+  const cachedFiles = project.cachedFiles || {};
+  const hasCachedFiles = Object.keys(cachedFiles).length > 0;
+  if (hasCachedFiles) {
+    console.log("[Codes] Using cached files from project pool:", Object.keys(cachedFiles).length);
+  }
   const savedTabs = project.savedTabs;
   const fileToOpen = project.openFileAfter || savedTabs?.active;
   if (fileToOpen) {
-    console.log("[Codes] Opening file after project switch:", fileToOpen);
+    console.log("[Codes] Opening file after project switch:", fileToOpen, hasCachedFiles ? "(from cache)" : "");
     try {
-      await openFile(fileToOpen);
+      const cached = cachedFiles[fileToOpen];
+      await openFile(fileToOpen, {
+        cachedContent: cached?.content,
+        cachedMtime: cached?.mtime
+      });
     } catch (err) {
       console.warn("[Codes] Failed to open file:", fileToOpen, err);
     }
@@ -1777,12 +1927,17 @@ async function handleProjectOpened(project) {
   if (savedTabs?.tabs && savedTabs.tabs.length > 0) {
     const otherTabs = savedTabs.tabs.filter((t) => t !== fileToOpen);
     if (otherTabs.length > 0) {
-      console.log("[Codes] Restoring other tabs in background:", otherTabs);
+      console.log("[Codes] Restoring other tabs in background:", otherTabs.length, hasCachedFiles ? "(from cache)" : "");
       SessionState2.setRestoringTabs(true);
       try {
         for (const tabPath of otherTabs) {
           try {
-            await openFile(tabPath, { background: true });
+            const cached = cachedFiles[tabPath];
+            await openFile(tabPath, {
+              background: true,
+              cachedContent: cached?.content,
+              cachedMtime: cached?.mtime
+            });
           } catch (err) {
             console.warn("[Codes] Failed to restore tab:", tabPath, err);
           }
@@ -1881,51 +2036,32 @@ async function checkFileChanges() {
 }
 async function handleExternalFileChange(path) {
   try {
+    const file = appState.openFiles.get(path);
+    if (!file)
+      return;
+    if (file.modified) {
+      console.log("[FileWatch] Skipping update - file has unsaved local changes:", path);
+      return;
+    }
     const fileData = await services.documents.readFile(path);
     const newContent = fileData.content;
-    const file = appState.openFiles.get(path);
-    if (file) {
-      if (path === appState.currentFilePath) {
-        const oldContent = getContent();
-        if (newContent !== oldContent) {
-          const oldCursor = editor.getCursor();
-          const scrollTop = container.scrollTop;
-          const newCursor = adjustCursorPosition(oldContent, newContent, oldCursor);
-          setContent(newContent, false);
+    if (path === appState.currentFilePath) {
+      const oldContent = getContent();
+      if (newContent !== oldContent) {
+        const scrollTop = container.scrollTop;
+        const changed = editor.applyExternalChange(newContent, "external");
+        if (changed) {
           rawTextarea.value = newContent;
-          editor.setCursor(newCursor);
           requestAnimationFrame(() => {
             container.scrollTop = scrollTop;
           });
         }
       }
-      appState.openFile(path, newContent, { mtime: fileData.mtime ?? null });
     }
+    appState.openFile(path, newContent, { mtime: fileData.mtime ?? null });
   } catch (err) {
     console.error("[FileWatch] Error handling file change:", err);
   }
-}
-function adjustCursorPosition(oldContent, newContent, oldCursor) {
-  if (oldCursor >= oldContent.length)
-    return newContent.length;
-  if (oldCursor === 0)
-    return 0;
-  let commonPrefix = 0;
-  const minLen = Math.min(oldContent.length, newContent.length);
-  while (commonPrefix < minLen && oldContent[commonPrefix] === newContent[commonPrefix]) {
-    commonPrefix++;
-  }
-  if (oldCursor <= commonPrefix)
-    return oldCursor;
-  let commonSuffix = 0;
-  while (commonSuffix < minLen - commonPrefix && oldContent[oldContent.length - 1 - commonSuffix] === newContent[newContent.length - 1 - commonSuffix]) {
-    commonSuffix++;
-  }
-  const oldChangeEnd = oldContent.length - commonSuffix;
-  if (oldCursor > oldChangeEnd) {
-    return oldCursor + (newContent.length - oldContent.length);
-  }
-  return Math.min(newContent.length - commonSuffix, newContent.length);
 }
 function getAiContext() {
   const selInfo = getSelectionInfo();
@@ -2049,27 +2185,66 @@ function initThemePicker() {
 }
 function initModeToggle() {
   const modeBtn = document.getElementById("mode-toggle-btn");
-  const zenBtn = document.getElementById("zen-toggle");
   modeBtn?.addEventListener("click", () => {
     toggleMode();
-  });
-  zenBtn?.addEventListener("click", () => {
-    appState.setZenMode(!appState.ui.zenMode);
-    document.body.classList.toggle("zen-mode", appState.ui.zenMode);
   });
 }
 async function loadInitialState() {
   browserRoot = localStorage.getItem("mrmd_browser_root") || "/home";
   const params = new URLSearchParams(window.location.search);
-  const filePath = params.get("file");
-  await SessionState2.initialize();
-  if (filePath) {
-    await openFile(filePath);
-  } else {
-    HomeScreen.show();
+  const urlFile = params.get("file");
+  if (urlFile) {
+    await openFile(urlFile);
+    SessionState2.initialize();
+    return;
   }
+  const lastProject = localStorage.getItem("mrmd_last_project");
+  if (lastProject) {
+    const savedTabsJson = localStorage.getItem(`mrmd_tabs_${lastProject}`);
+    if (savedTabsJson) {
+      try {
+        const savedTabs = JSON.parse(savedTabsJson);
+        const activeFile = savedTabs.active;
+        if (activeFile) {
+          console.log("[Restore] Instant restore:", activeFile);
+          await openFile(activeFile);
+          const scrollTop = savedTabs.scrollPositions?.[activeFile]?.scrollTop || 0;
+          if (scrollTop > 0) {
+            requestAnimationFrame(() => {
+              const editorEl = document.getElementById("editor-container");
+              if (editorEl)
+                editorEl.scrollTop = scrollTop;
+            });
+          }
+          await SessionState2.openProject(lastProject, true, {
+            skipFileOpen: true,
+            cachedActiveFile: activeFile
+          });
+          const otherTabs = (savedTabs.tabs || []).filter((t) => t !== activeFile);
+          if (otherTabs.length > 0) {
+            console.log("[Restore] Restoring other tabs in background:", otherTabs.length);
+            SessionState2.setRestoringTabs(true);
+            Promise.all(
+              otherTabs.map(
+                (tabPath) => openFile(tabPath, { background: true }).catch(() => {
+                })
+              )
+            ).finally(() => {
+              SessionState2.setRestoringTabs(false);
+            });
+          }
+          SessionState2.initialize();
+          return;
+        }
+      } catch (err) {
+        console.warn("[Restore] Failed to parse saved tabs:", err);
+      }
+    }
+  }
+  await SessionState2.initialize();
+  HomeScreen.show();
 }
-var services, editor, ipython, ipythonExecutor, aiClient, fileTabs, fileBrowser, terminalTabs, notificationManager, aiPalette, historyPanel, interfaceManager, aiActionHandler, container, rawTextarea, cursorPosEl, execStatusEl, browserRoot, documentBasePath, silentUpdate, AUTOSAVE_DELAY, AUTOSAVE_MAX_INTERVAL, autosaveTimer, lastSaveTime, fileCheckInterval, noCollab, currentFileLoadId;
+var services, editor, ipython, ipythonExecutor, aiClient, fileTabs, fileBrowser, terminalTabs, notificationManager, aiPalette, historyPanel, interfaceManager, aiActionHandler, container, rawTextarea, cursorPosEl, execStatusEl, browserRoot, documentBasePath, silentUpdate, AUTOSAVE_DELAY, AUTOSAVE_MAX_INTERVAL, autosaveTimer, lastSaveTime, autosavePaused, fileCheckInterval, noCollab, currentFileLoadId;
 var init_codes = __esm({
   "src/apps/codes/index.ts"() {
     "use strict";
@@ -2088,6 +2263,7 @@ var init_codes = __esm({
     AUTOSAVE_MAX_INTERVAL = 3e4;
     autosaveTimer = null;
     lastSaveTime = Date.now();
+    autosavePaused = false;
     fileCheckInterval = null;
     noCollab = false;
     currentFileLoadId = 0;

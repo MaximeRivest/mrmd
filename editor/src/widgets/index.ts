@@ -13,3 +13,15 @@ export {
   INLINE_HTML_TAGS,
   SELF_CLOSING_TAGS,
 } from './html';
+export {
+  OutputWidget,
+  createOutputWidget,
+  outputWidgetStyles,
+  type OutputWidgetConfig,
+} from './output';
+export {
+  CellStatusWidget,
+  getCellState,
+  cellStatusStyles,
+  type CellState,
+} from './cell-status';

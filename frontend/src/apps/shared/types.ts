@@ -54,7 +54,6 @@ export interface UIState {
     sidebarVisible: boolean;
     activePanel: 'projects' | 'files' | 'variables' | 'processes' | 'history' | 'terminal' | 'markdown';
     theme: 'default' | 'github' | 'docs';
-    zenMode: boolean;
 }
 
 export interface AppStateSnapshot {

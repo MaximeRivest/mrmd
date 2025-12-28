@@ -118,7 +118,20 @@ const styles = `
     color: var(--accent);
     font-size: 10px;
 }
+/* Running execution indicator */
+.file-tab.running .tab-icon::before {
+    content: '';
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    background: var(--accent, #7aa2f7);
+    border-radius: 50%;
+    animation: tab-pulse 1.5s ease-in-out infinite;
+    margin-left: -2px;
+    margin-top: -2px;
+}
 .file-tab .tab-icon {
+    position: relative;
     font-size: 11px;
     opacity: 0.6;
     flex-shrink: 0;
@@ -152,6 +165,12 @@ const styles = `
     background: rgba(255, 255, 255, 0.1);
     color: var(--text);
     opacity: 1;
+}
+
+/* Pulse animation for running indicator */
+@keyframes tab-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.8); }
 }
 
 /* Add tab button */
@@ -499,6 +518,30 @@ export function createFileTabs(options = {}) {
                 SessionState.removeOpenFile(oldPath);
                 SessionState.addOpenFile(newPath, fileState.content || '', fileState.modified || false);
                 SessionState.setActiveFile(newPath);
+            }
+        },
+
+        /**
+         * Update tab running state (shows spinner for executing code)
+         * @param {string} path - File path
+         * @param {boolean} running - Whether file has running execution
+         */
+        updateTabRunning(path, running) {
+            const tab = tabsContainer.querySelector(`[data-path="${CSS.escape(path)}"]`);
+            if (tab) {
+                tab.classList.toggle('running', running);
+            }
+        },
+
+        /**
+         * Update running state for multiple tabs at once
+         * @param {Set<string>} runningFiles - Set of file paths with running executions
+         */
+        updateAllRunningStates(runningFiles) {
+            const tabs = tabsContainer.querySelectorAll('.file-tab');
+            for (const tab of tabs) {
+                const path = tab.dataset.path;
+                tab.classList.toggle('running', runningFiles.has(path));
             }
         },
     };

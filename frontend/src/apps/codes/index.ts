@@ -138,6 +138,7 @@ const AUTOSAVE_DELAY = 2000;
 const AUTOSAVE_MAX_INTERVAL = 30000;
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
 let lastSaveTime = Date.now();
+let autosavePaused = false; // Pause during bulk operations like Run All
 
 // File watching
 let fileCheckInterval: ReturnType<typeof setInterval> | null = null;
@@ -167,6 +168,10 @@ export async function mount(svc: Services, options: MountOptions = {}): Promise<
 
     // Set the default interface mode before initializing UI
     SessionState.setInterfaceMode(defaultMode);
+
+    // Inject AppState into SessionState for unified state management
+    // This makes AppState the single source of truth for file state
+    SessionState.setAppState(appState);
 
     // Check for noCollab mode
     noCollab = new URLSearchParams(window.location.search).has('noCollab');
@@ -292,6 +297,18 @@ function initEditor(): void {
     setContent('', true);
     rawTextarea.value = '';
 
+    // Set up file callbacks for background execution support
+    // This allows code execution to update files even when user switches tabs
+    if (editor.tracker) {
+        editor.tracker.setFileCallbacks({
+            getCurrentFilePath: () => appState.currentFilePath,
+            getFileContent: (path: string) => appState.openFiles.get(path)?.content ?? null,
+            updateFileContent: (path: string, content: string) => {
+                appState.updateFileContent(path, content, true);
+            },
+        });
+    }
+
     // Initialize selection toolbar
     initSelectionToolbar(container, {
         getContent: () => editor.getDoc(),
@@ -397,6 +414,7 @@ async function initUIModules(): Promise<void> {
             onBeforeClose: handleBeforeTabClose,
             onTabClose: handleTabClose,
         });
+        fileTabsContainer.appendChild(fileTabs.element);
     }
 
     // Notification Manager
@@ -552,6 +570,11 @@ async function initCollaboration(): Promise<void> {
     collab.onConnected((info) => {
         console.log('[Collab] Connected:', info.session_id);
         stopPollingFallback();
+
+        // Watch all currently open files
+        for (const path of appState.openFiles.keys()) {
+            collab.watchFile(path);
+        }
     });
 
     collab.onDisconnected(() => {
@@ -594,6 +617,23 @@ function setupEventHandlers(): void {
 
     SessionState.on('file-saved', (path: string) => {
         fileTabs?.updateTabModified(path, false);
+    });
+
+    // Autosave pause/resume for bulk operations (e.g., Run All Cells)
+    let resumeAutosave: (() => void) | null = null;
+    SessionState.on('autosave-pause', () => {
+        resumeAutosave = pauseAutosave();
+    });
+    SessionState.on('autosave-resume', () => {
+        if (resumeAutosave) {
+            resumeAutosave();
+            resumeAutosave = null;
+        }
+    });
+
+    // Save immediately (used after each block during Run All)
+    SessionState.on('save-now', async () => {
+        await saveCurrentFileNow();
     });
 
     SessionState.on('project-opened', handleProjectOpened);
@@ -729,20 +769,44 @@ function initVariablesPanel(): void {
     document.addEventListener('mrmd:execution-complete', (event: Event) => {
         console.log('[Codes] Execution complete event - refreshing variables panel');
         VariablesPanel.refresh();
+        // Update file tabs running indicators
+        updateTabRunningStates();
     });
+
+    // Listen for execution start to update tab indicators
+    document.addEventListener('mrmd:execution-start', () => {
+        updateTabRunningStates();
+    });
+}
+
+/**
+ * Update file tabs to show running execution indicators
+ */
+function updateTabRunningStates(): void {
+    if (!fileTabs || !editor.tracker) return;
+
+    const runningFiles = editor.tracker.getRunningFiles();
+    fileTabs.updateAllRunningStates(runningFiles);
 }
 
 // ============================================================================
 // File Operations
 // ============================================================================
 
-async function openFile(path: string, options: { background?: boolean } = {}): Promise<void> {
+async function openFile(path: string, options: { background?: boolean; cachedContent?: string; cachedMtime?: number } = {}): Promise<void> {
     // Increment load ID to track this specific load request
     const loadId = ++currentFileLoadId;
-    console.log('[Codes] Opening file:', path, options, `(loadId: ${loadId})`);
+    console.log('[Codes] Opening file:', path, options.cachedContent ? '(from cache)' : '', `(loadId: ${loadId})`);
 
     try {
-        const file = await services.documents.openFile(path);
+        // Use cached content if available (from project pool), otherwise fetch
+        let file: { content: string; mtime?: number };
+        if (options.cachedContent !== undefined) {
+            file = { content: options.cachedContent, mtime: options.cachedMtime };
+            console.log('[Codes] Using cached content for:', path);
+        } else {
+            file = await services.documents.openFile(path);
+        }
 
         // Check if a newer load was started while we were fetching
         if (loadId !== currentFileLoadId && !options.background) {
@@ -755,6 +819,11 @@ async function openFile(path: string, options: { background?: boolean } = {}): P
             modified: false,
         });
 
+        // Watch for external changes to this file
+        if (services.collaboration.isConnected) {
+            services.collaboration.watchFile(path);
+        }
+
         const filename = path.split('/').pop() || path;
         fileTabs?.addTab(path, filename, false);
 
@@ -766,7 +835,9 @@ async function openFile(path: string, options: { background?: boolean } = {}): P
             }
 
             appState.setCurrentFile(path);
+            SessionState.setActiveFile(path);  // Sync to SessionState for Open Files panel
             fileTabs?.setActiveTab(path);
+            editor.setFilePath(path);  // Set file path for execution queue
 
             setContent(file.content, true);
             rawTextarea.value = file.content;
@@ -796,7 +867,10 @@ async function saveFile(): Promise<void> {
     const currentPath = appState.currentFilePath;
     if (!currentPath) return;
 
-    const content = getContent();
+    // Use stored content from AppState for consistency
+    // (onChange keeps AppState in sync with editor)
+    const file = appState.openFiles.get(currentPath);
+    const content = file?.content ?? getContent();
     execStatusEl.textContent = 'saving...';
 
     try {
@@ -822,44 +896,104 @@ async function saveFile(): Promise<void> {
 }
 
 function scheduleAutosave(): void {
-    const currentPath = appState.currentFilePath;
-    if (!currentPath || !appState.isModified) return;
+    // Don't schedule if paused (e.g., during Run All)
+    if (autosavePaused) return;
+
+    // Capture the file path NOW - this is the file we intend to save
+    // This prevents race conditions if user switches tabs before timer fires
+    const fileToSave = appState.currentFilePath;
+    if (!fileToSave || !appState.isModified) return;
 
     if (autosaveTimer) {
         clearTimeout(autosaveTimer);
     }
 
     if (Date.now() - lastSaveTime > AUTOSAVE_MAX_INTERVAL) {
-        doAutosave();
+        doAutosaveForFile(fileToSave);
         return;
     }
 
-    autosaveTimer = setTimeout(doAutosave, AUTOSAVE_DELAY);
+    // Pass the captured path to the timer callback
+    autosaveTimer = setTimeout(() => doAutosaveForFile(fileToSave), AUTOSAVE_DELAY);
 }
 
-async function doAutosave(): Promise<void> {
-    const currentPath = appState.currentFilePath;
-    if (!currentPath || !appState.isModified) return;
+/**
+ * Pause autosave during bulk operations (e.g., Run All Cells)
+ * Returns a function to resume autosave
+ */
+function pauseAutosave(): () => void {
+    autosavePaused = true;
+    if (autosaveTimer) {
+        clearTimeout(autosaveTimer);
+        autosaveTimer = null;
+    }
+    console.log('[Autosave] Paused');
 
-    console.log('[Autosave] Saving', currentPath);
-    execStatusEl.textContent = 'autosaving...';
+    return () => {
+        autosavePaused = false;
+        console.log('[Autosave] Resumed');
+        // Schedule autosave for any pending changes
+        scheduleAutosave();
+    };
+}
+
+/**
+ * Save the current file immediately (used during bulk operations)
+ * This bypasses the autosave pause flag
+ */
+async function saveCurrentFileNow(): Promise<void> {
+    const filePath = appState.currentFilePath;
+    if (!filePath) return;
+
+    const file = appState.openFiles.get(filePath);
+    if (!file) return;
 
     try {
-        const content = getContent();
-        await services.documents.saveFile(currentPath, content, { message: 'autosave' });
-        appState.markFileSaved(currentPath);
+        await services.documents.saveFile(filePath, file.content, { message: 'execution' });
+        appState.markFileSaved(filePath);
         lastSaveTime = Date.now();
         updateFileIndicator();
-        execStatusEl.textContent = 'autosaved';
-
-        setTimeout(() => {
-            if (execStatusEl.textContent === 'autosaved') {
-                execStatusEl.textContent = 'ready';
-            }
-        }, 1000);
     } catch (err) {
-        console.error('[Autosave] Failed:', err);
-        execStatusEl.textContent = 'autosave failed';
+        console.error('[Save] Failed:', err);
+    }
+}
+
+async function doAutosaveForFile(filePath: string): Promise<void> {
+    // Read from AppState - the source of truth for this file's content
+    // NOT from getContent() which only shows what's currently in the editor
+    const file = appState.openFiles.get(filePath);
+    if (!file?.modified) return;
+
+    console.log('[Autosave] Saving', filePath);
+
+    // Only show status if this file is currently displayed
+    const isCurrentFile = appState.currentFilePath === filePath;
+    if (isCurrentFile) {
+        execStatusEl.textContent = 'autosaving...';
+    }
+
+    try {
+        // Use the stored content from AppState, not the editor
+        await services.documents.saveFile(filePath, file.content, { message: 'autosave' });
+        appState.markFileSaved(filePath);
+        lastSaveTime = Date.now();
+
+        // Only update UI if this file is still displayed
+        if (appState.currentFilePath === filePath) {
+            updateFileIndicator();
+            execStatusEl.textContent = 'autosaved';
+
+            setTimeout(() => {
+                if (execStatusEl.textContent === 'autosaved') {
+                    execStatusEl.textContent = 'ready';
+                }
+            }, 1000);
+        }
+    } catch (err) {
+        console.error('[Autosave] Failed for', filePath, ':', err);
+        if (appState.currentFilePath === filePath) {
+            execStatusEl.textContent = 'autosave failed';
+        }
     }
 }
 
@@ -902,16 +1036,39 @@ async function createNewNotebook(projectPath?: string, initialContent?: string):
 
 async function handleTabSelect(path: string): Promise<void> {
     const currentPath = appState.currentFilePath;
-    if (currentPath) {
+
+    // CRITICAL: Before switching, save the FULL editor state (including undo history)
+    if (currentPath && currentPath !== path) {
+        // Cancel any pending autosave for the old file
+        if (autosaveTimer) {
+            clearTimeout(autosaveTimer);
+            autosaveTimer = null;
+        }
+
+        // Save the full EditorState (preserves undo/redo history, cursor, selection)
+        appState.saveEditorState(currentPath, editor.view.state);
+
+        // Save scroll position
         appState.updateFileScrollTop(currentPath, container.scrollTop);
     }
 
     const file = appState.openFiles.get(path);
     if (file) {
-        setContent(file.content, true);
-        rawTextarea.value = file.content;
+        // Try to restore the full EditorState (with undo history)
+        const savedState = appState.getEditorState(path);
+        if (savedState) {
+            // Restore full state including undo history
+            editor.view.setState(savedState as import('@codemirror/state').EditorState);
+            rawTextarea.value = file.content;
+        } else {
+            // First time opening - create fresh state
+            setContent(file.content, true);
+            rawTextarea.value = file.content;
+        }
 
         appState.setCurrentFile(path);
+        SessionState.setActiveFile(path);  // Sync to SessionState for Open Files panel
+        editor.setFilePath(path);  // Set file path for execution queue
         updateFileIndicator();
 
         const filename = path.split('/').pop() || path;
@@ -942,6 +1099,11 @@ async function handleBeforeTabClose(path: string): Promise<void> {
 
 async function handleTabClose(path: string): Promise<void> {
     terminalTabs?.closeTerminalsForFile(path);
+
+    // Stop watching for external changes
+    if (services.collaboration.isConnected) {
+        services.collaboration.unwatchFile(path);
+    }
 
     const newActivePath = appState.closeFile(path);
 
@@ -974,6 +1136,7 @@ interface ProjectOpenedEvent {
     } | null;
     openFileAfter?: string | null;
     skipFileOpen?: boolean;
+    cachedFiles?: Record<string, { content: string; mtime: number }> | null;
 }
 
 async function handleProjectOpened(project: ProjectOpenedEvent): Promise<void> {
@@ -996,6 +1159,8 @@ async function handleProjectOpened(project: ProjectOpenedEvent): Promise<void> {
     ipython.setProjectPath(project.path);
     ipython.setFigureDir(project.path + '/.mrmd/assets');
 
+    // Set base path to project root for image resolution
+    // This means image paths like .mrmd/assets/figure.png work from any file
     setDocumentBasePath(project.path);
 
     // Connect collaboration
@@ -1017,15 +1182,26 @@ async function handleProjectOpened(project: ProjectOpenedEvent): Promise<void> {
         return;
     }
 
+    // Get cached files from project pool (if warm switch)
+    const cachedFiles = project.cachedFiles || {};
+    const hasCachedFiles = Object.keys(cachedFiles).length > 0;
+    if (hasCachedFiles) {
+        console.log('[Codes] Using cached files from project pool:', Object.keys(cachedFiles).length);
+    }
+
     // Determine which file to open (priority: openFileAfter > savedTabs.active)
     const savedTabs = project.savedTabs;
     const fileToOpen = project.openFileAfter || savedTabs?.active;
 
     // FIRST: Open the requested file immediately for fast UX
     if (fileToOpen) {
-        console.log('[Codes] Opening file after project switch:', fileToOpen);
+        console.log('[Codes] Opening file after project switch:', fileToOpen, hasCachedFiles ? '(from cache)' : '');
         try {
-            await openFile(fileToOpen);
+            const cached = cachedFiles[fileToOpen];
+            await openFile(fileToOpen, {
+                cachedContent: cached?.content,
+                cachedMtime: cached?.mtime,
+            });
         } catch (err) {
             console.warn('[Codes] Failed to open file:', fileToOpen, err);
         }
@@ -1035,7 +1211,7 @@ async function handleProjectOpened(project: ProjectOpenedEvent): Promise<void> {
     if (savedTabs?.tabs && savedTabs.tabs.length > 0) {
         const otherTabs = savedTabs.tabs.filter(t => t !== fileToOpen);
         if (otherTabs.length > 0) {
-            console.log('[Codes] Restoring other tabs in background:', otherTabs);
+            console.log('[Codes] Restoring other tabs in background:', otherTabs.length, hasCachedFiles ? '(from cache)' : '');
 
             // Mark that we're restoring to prevent auto-save during restore
             SessionState.setRestoringTabs(true);
@@ -1043,7 +1219,12 @@ async function handleProjectOpened(project: ProjectOpenedEvent): Promise<void> {
             try {
                 for (const tabPath of otherTabs) {
                     try {
-                        await openFile(tabPath, { background: true });
+                        const cached = cachedFiles[tabPath];
+                        await openFile(tabPath, {
+                            background: true,
+                            cachedContent: cached?.content,
+                            cachedMtime: cached?.mtime,
+                        });
                     } catch (err) {
                         // File may no longer exist - skip it
                         console.warn('[Codes] Failed to restore tab:', tabPath, err);
@@ -1161,30 +1342,43 @@ async function checkFileChanges(): Promise<void> {
 
 async function handleExternalFileChange(path: string): Promise<void> {
     try {
+        const file = appState.openFiles.get(path);
+        if (!file) return;
+
+        // Don't overwrite local changes that haven't been saved yet
+        // This prevents the race condition where file polling reads the old
+        // file before autosave has written the new content (e.g., after code execution)
+        if (file.modified) {
+            console.log('[FileWatch] Skipping update - file has unsaved local changes:', path);
+            return;
+        }
+
         const fileData = await services.documents.readFile(path);
         const newContent = fileData.content;
 
-        const file = appState.openFiles.get(path);
-        if (file) {
-            if (path === appState.currentFilePath) {
-                const oldContent = getContent();
-                if (newContent !== oldContent) {
-                    const oldCursor = editor.getCursor();
-                    const scrollTop = container.scrollTop;
-                    const newCursor = adjustCursorPosition(oldContent, newContent, oldCursor);
+        if (path === appState.currentFilePath) {
+            const oldContent = getContent();
+            if (newContent !== oldContent) {
+                const scrollTop = container.scrollTop;
 
-                    setContent(newContent, false);
+                // Use applyExternalChange for diff-based update
+                // This works better with CRDT/Yjs when collaboration is enabled
+                // and produces minimal document changes
+                const changed = editor.applyExternalChange(newContent, 'external');
+
+                if (changed) {
                     rawTextarea.value = newContent;
-                    editor.setCursor(newCursor);
+                    // Note: applyExternalChange preserves cursor position relative to content
+                    // so we don't need to manually adjust cursor anymore
 
                     requestAnimationFrame(() => {
                         container.scrollTop = scrollTop;
                     });
                 }
             }
-
-            appState.openFile(path, newContent, { mtime: fileData.mtime ?? null });
         }
+
+        appState.openFile(path, newContent, { mtime: fileData.mtime ?? null });
     } catch (err) {
         console.error('[FileWatch] Error handling file change:', err);
     }
@@ -1377,15 +1571,8 @@ function initThemePicker(): void {
 
 function initModeToggle(): void {
     const modeBtn = document.getElementById('mode-toggle-btn');
-    const zenBtn = document.getElementById('zen-toggle');
-
     modeBtn?.addEventListener('click', () => {
         toggleMode();
-    });
-
-    zenBtn?.addEventListener('click', () => {
-        appState.setZenMode(!appState.ui.zenMode);
-        document.body.classList.toggle('zen-mode', appState.ui.zenMode);
     });
 }
 
@@ -1410,15 +1597,72 @@ async function loadInitialState(): Promise<void> {
     browserRoot = localStorage.getItem('mrmd_browser_root') || '/home';
 
     const params = new URLSearchParams(window.location.search);
-    const filePath = params.get('file');
+    const urlFile = params.get('file');
 
-    // Initialize SessionState first to load recent projects/notebooks
-    await SessionState.initialize();
-
-    if (filePath) {
-        await openFile(filePath);
-    } else {
-        // No file specified - show home screen
-        HomeScreen.show();
+    // PRIORITY 1: URL parameter always wins
+    if (urlFile) {
+        await openFile(urlFile);
+        SessionState.initialize(); // Background, don't block
+        return;
     }
+
+    // PRIORITY 2: Try instant restore from localStorage (sync read - no await)
+    const lastProject = localStorage.getItem('mrmd_last_project');
+    if (lastProject) {
+        const savedTabsJson = localStorage.getItem(`mrmd_tabs_${lastProject}`);
+        if (savedTabsJson) {
+            try {
+                const savedTabs = JSON.parse(savedTabsJson);
+                const activeFile = savedTabs.active;
+
+                if (activeFile) {
+                    console.log('[Restore] Instant restore:', activeFile);
+
+                    // Open the file immediately (fetches from server - authoritative)
+                    await openFile(activeFile);
+
+                    // Restore scroll position after file is loaded
+                    const scrollTop = savedTabs.scrollPositions?.[activeFile]?.scrollTop || 0;
+                    if (scrollTop > 0) {
+                        requestAnimationFrame(() => {
+                            const editorEl = document.getElementById('editor-container');
+                            if (editorEl) editorEl.scrollTop = scrollTop;
+                        });
+                    }
+
+                    // Set up project context (IPython session, collaboration, etc.)
+                    // Pass skipFileOpen since we already opened the file
+                    await SessionState.openProject(lastProject, true, {
+                        skipFileOpen: true,
+                        cachedActiveFile: activeFile,
+                    });
+
+                    // Restore other tabs in background
+                    const otherTabs = (savedTabs.tabs || []).filter((t: string) => t !== activeFile);
+                    if (otherTabs.length > 0) {
+                        console.log('[Restore] Restoring other tabs in background:', otherTabs.length);
+                        SessionState.setRestoringTabs(true);
+                        Promise.all(
+                            otherTabs.map((tabPath: string) =>
+                                openFile(tabPath, { background: true }).catch(() => {})
+                            )
+                        ).finally(() => {
+                            SessionState.setRestoringTabs(false);
+                        });
+                    }
+
+                    // Initialize SessionState in background (for HomeScreen if needed later)
+                    SessionState.initialize();
+                    return;
+                }
+            } catch (err) {
+                console.warn('[Restore] Failed to parse saved tabs:', err);
+            }
+        }
+    }
+
+    // PRIORITY 3: No saved session - show HomeScreen
+    // Initialize SessionState first so HomeScreen has data to show
+    await SessionState.initialize();
+    HomeScreen.show();
 }

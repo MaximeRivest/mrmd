@@ -9,13 +9,15 @@ import {
 import { defaultKeymap, history, historyKeymap, undo, redo } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
-import { foldGutter, foldKeymap, foldService } from '@codemirror/language';
+import { foldGutter, foldKeymap, foldService, foldEffect, unfoldEffect, foldedRanges, foldable } from '@codemirror/language';
 
-import type { EditorConfig, CodeBlockInfo } from './config';
+import type { EditorConfig } from './config';
 import { defaultConfig } from './config';
-import { markdownDecorations, TrackerRef } from '../markdown/decorations';
+import { getCodeBlocksFromAST, isOutputBlock, type CodeBlockInfo } from './code-blocks';
+import { markdownDecorations, TrackerRef, QueueRef, FilePathRef } from '../markdown/decorations';
 import { zenTheme } from '../themes/zen';
 import { ExecutionTracker } from '../execution/tracker';
+import { ExecutionQueue, createExecutionQueue } from '../execution/queue';
 import { MockExecutor } from '../execution/executor';
 import {
   createCollabExtension,
@@ -33,7 +35,10 @@ export class MrmdEditor {
   readonly view: EditorView;
   readonly lockManager: LockManager | null = null;
   readonly tracker: ExecutionTracker | null = null;
+  readonly queue: ExecutionQueue | null = null;
   private trackerRef: TrackerRef = { current: null };
+  private queueRef: QueueRef = { current: null };
+  private filePathRef: FilePathRef = { current: null };
   private config: EditorConfig;
 
   constructor(config: EditorConfig) {
@@ -56,7 +61,12 @@ export class MrmdEditor {
       });
     }
 
-    // Build extensions (trackerRef will be populated after view creation)
+    // Create execution queue
+    // Note: Awareness will be set later if Yjs collaboration is configured
+    this.queue = createExecutionQueue();
+    this.queueRef.current = this.queue;
+
+    // Build extensions (trackerRef and queueRef will be populated after view creation)
     const extensions = this.buildExtensions();
 
     // Create editor state
@@ -71,8 +81,9 @@ export class MrmdEditor {
       parent: this.config.parent,
     });
 
-    // Initialize tracker with view and update the ref
+    // Initialize tracker with view and wire up queue
     this.tracker = new ExecutionTracker(this.view, executor);
+    this.tracker.setQueue(this.queue);
     this.trackerRef.current = this.tracker;
 
     // Focus editor
@@ -93,9 +104,11 @@ export class MrmdEditor {
         codeLanguages: languages,
       }),
 
-      // Decorations (uses trackerRef which gets populated after view creation)
+      // Decorations (uses refs which get populated after view creation)
       markdownDecorations(this.trackerRef, {
         resolveImageUrl: this.config.resolveImageUrl,
+        queueRef: this.queueRef,
+        filePathRef: this.filePathRef,
       }),
 
       // Folding
@@ -214,39 +227,11 @@ export class MrmdEditor {
   // ============================================================================
 
   /**
-   * Information about a code block in the document
+   * Get all executable code blocks from the document.
+   * Uses the syntax tree (same as run button decorations) for reliable parsing.
    */
   getCodeBlocks(): CodeBlockInfo[] {
-    const doc = this.view.state.doc.toString();
-    const blocks: CodeBlockInfo[] = [];
-
-    // Regex to find code blocks: ```lang\ncode\n```
-    const regex = /^```(\w*)\n([\s\S]*?)^```$/gm;
-    let match;
-    let index = 0;
-
-    while ((match = regex.exec(doc)) !== null) {
-      const lang = match[1] || '';
-      const code = match[2];
-
-      // Skip output and html-rendered blocks
-      if (lang.startsWith('output') || lang.startsWith('html-rendered')) {
-        continue;
-      }
-
-      blocks.push({
-        index,
-        language: lang,
-        code,
-        start: match.index,
-        end: match.index + match[0].length,
-        codeStart: match.index + 3 + lang.length + 1, // After ```lang\n
-        codeEnd: match.index + 3 + lang.length + 1 + code.length,
-      });
-      index++;
-    }
-
-    return blocks;
+    return getCodeBlocksFromAST(this.view.state);
   }
 
   /**
@@ -268,6 +253,176 @@ export class MrmdEditor {
   }
 
   /**
+   * Find and click the run button at or before the cursor position.
+   * This uses the same code path as clicking the button directly.
+   * @returns true if a run button was found and clicked
+   */
+  runCodeBlockAtCursor(): boolean {
+    const cursor = this.getCursor();
+    const cursorLine = this.view.state.doc.lineAt(cursor).number;
+
+    // Find all run buttons in the editor
+    const buttons = this.view.dom.querySelectorAll('.cm-run-button');
+    let bestButton: HTMLElement | null = null;
+    let bestLine = -1;
+
+    for (const btn of buttons) {
+      // Get the position of this button in the document
+      const pos = this.view.posAtDOM(btn);
+      if (pos === null) continue;
+
+      const btnLine = this.view.state.doc.lineAt(pos).number;
+
+      // Find the button on or before cursor line, closest to cursor
+      if (btnLine <= cursorLine && btnLine > bestLine) {
+        bestButton = btn as HTMLElement;
+        bestLine = btnLine;
+      }
+    }
+
+    if (bestButton) {
+      bestButton.click();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Run all code blocks in order sequentially.
+   * Waits for each execution to complete before starting the next.
+   * @param onBlockComplete - Optional callback called after each block completes (for saving progress)
+   * @returns The number of code blocks executed
+   */
+  async runAllCodeBlocks(onBlockComplete?: (blockIndex: number, total: number) => Promise<void> | void): Promise<number> {
+    // Get initial block count
+    const initialBlocks = this.getCodeBlocks();
+    const totalBlocks = initialBlocks.length;
+
+    if (totalBlocks === 0) return 0;
+
+    console.log(`[Editor] Running all ${totalBlocks} code blocks`);
+
+    let executed = 0;
+
+    // Run each block by index, always fetching fresh positions
+    for (let i = 0; i < totalBlocks; i++) {
+      // Get fresh block list (positions shift after each execution adds output)
+      const blocks = this.getCodeBlocks();
+      const block = blocks[i];
+
+      if (!block) {
+        console.warn(`[Editor] Block ${i} not found, stopping`);
+        break;
+      }
+
+      console.log(`[Editor] Running block ${i + 1}/${totalBlocks}: ${block.language}`);
+
+      try {
+        await this.runCodeBlock(i);
+        executed++;
+        console.log(`[Editor] Block ${i + 1} completed`);
+
+        // Call the callback after each successful block (e.g., to save progress)
+        if (onBlockComplete) {
+          await onBlockComplete(i, totalBlocks);
+        }
+      } catch (err) {
+        console.error(`[Editor] Block ${i + 1} failed:`, err);
+        // Continue with next block even if one fails
+      }
+    }
+
+    console.log(`[Editor] Completed ${executed}/${totalBlocks} blocks`);
+    return executed;
+  }
+
+  /**
+   * Run all code blocks above (and including) the cursor position.
+   * @param onBlockComplete - Optional callback called after each block completes
+   * @returns The number of code blocks executed
+   */
+  async runCodeBlocksAbove(onBlockComplete?: (blockIndex: number, total: number) => Promise<void> | void): Promise<number> {
+    const cursor = this.getCursor();
+    const cursorLine = this.view.state.doc.lineAt(cursor).number;
+
+    // Find how many blocks are at or above cursor
+    const blocks = this.getCodeBlocks();
+    let stopAtIndex = -1;
+    for (let i = 0; i < blocks.length; i++) {
+      const blockLine = this.view.state.doc.lineAt(blocks[i].start).number;
+      if (blockLine <= cursorLine) {
+        stopAtIndex = i;
+      }
+    }
+
+    if (stopAtIndex < 0) return 0;
+
+    const total = stopAtIndex + 1;
+
+    // Run blocks 0 through stopAtIndex sequentially
+    let executed = 0;
+    for (let i = 0; i <= stopAtIndex; i++) {
+      // Re-fetch blocks after each execution (positions shift)
+      const freshBlocks = this.getCodeBlocks();
+      if (i >= freshBlocks.length) break;
+
+      await this.runCodeBlock(i);
+      executed++;
+
+      if (onBlockComplete) {
+        await onBlockComplete(i, total);
+      }
+    }
+
+    return executed;
+  }
+
+  /**
+   * Run all code blocks below (and including) the cursor position.
+   * @param onBlockComplete - Optional callback called after each block completes
+   * @returns The number of code blocks executed
+   */
+  async runCodeBlocksBelow(onBlockComplete?: (blockIndex: number, total: number) => Promise<void> | void): Promise<number> {
+    const cursor = this.getCursor();
+    const cursorLine = this.view.state.doc.lineAt(cursor).number;
+
+    // Find the first block at or after cursor
+    const blocks = this.getCodeBlocks();
+    let startIndex = -1;
+    for (let i = 0; i < blocks.length; i++) {
+      const blockLine = this.view.state.doc.lineAt(blocks[i].start).number;
+      if (blockLine <= cursorLine) {
+        startIndex = i; // Current block at or before cursor
+      }
+    }
+
+    // If cursor is before all blocks, start from 0
+    if (startIndex < 0) startIndex = 0;
+
+    const total = blocks.length - startIndex;
+
+    // Run from startIndex to end sequentially
+    let executed = 0;
+    let blockIndex = startIndex;
+
+    while (true) {
+      const freshBlocks = this.getCodeBlocks();
+      if (blockIndex >= freshBlocks.length) break;
+
+      await this.runCodeBlock(blockIndex);
+      executed++;
+
+      if (onBlockComplete) {
+        await onBlockComplete(blockIndex, total);
+      }
+
+      blockIndex++;
+    }
+
+    return executed;
+  }
+
+  /**
    * Find and remove output block after a code block
    */
   clearCodeBlockOutput(blockIndex: number): boolean {
@@ -277,8 +432,9 @@ export class MrmdEditor {
     const doc = this.view.state.doc.toString();
     const afterBlock = doc.slice(block.end);
 
-    // Look for output block immediately after
-    const outputMatch = afterBlock.match(/^\n```output(?::[^\n]*)?\n[\s\S]*?```/);
+    // Look for output block immediately after (supports 3+ backticks)
+    // The backreference \1 ensures closing fence matches opening length
+    const outputMatch = afterBlock.match(/^\n(`{3,})output(?::[^\n]*)?\n[\s\S]*?\1/);
     if (!outputMatch) return false;
 
     this.view.dispatch({
@@ -298,8 +454,9 @@ export class MrmdEditor {
   clearAllOutputs(): void {
     const doc = this.view.state.doc.toString();
 
-    // Find all output and html-rendered blocks
-    const outputRegex = /\n```(?:output|html-rendered)(?::[^\n]*)?\n[\s\S]*?```/g;
+    // Find all output and html-rendered blocks (supports 3+ backticks)
+    // The backreference \1 ensures closing fence matches opening length
+    const outputRegex = /\n(`{3,})(?:output|html-rendered)(?::[^\n]*)?\n[\s\S]*?\1/g;
     const changes: { from: number; to: number; insert: string }[] = [];
 
     let match;
@@ -316,6 +473,60 @@ export class MrmdEditor {
       changes.reverse();
       this.view.dispatch({ changes });
     }
+  }
+
+  /**
+   * Fold (collapse) all output blocks using CodeMirror's fold system
+   */
+  foldAllOutputs(): number {
+    const effects: ReturnType<typeof foldEffect.of>[] = [];
+    const state = this.view.state;
+
+    // Iterate through each line to find foldable output blocks
+    for (let i = 1; i <= state.doc.lines; i++) {
+      const line = state.doc.line(i);
+      const lineText = line.text;
+
+      // Check if this line starts an output block
+      if (isOutputBlock(lineText)) {
+        // Get the foldable range for this line
+        const range = foldable(state, line.from, line.to);
+        if (range) {
+          effects.push(foldEffect.of({ from: range.from, to: range.to }));
+        }
+      }
+    }
+
+    if (effects.length > 0) {
+      this.view.dispatch({ effects });
+    }
+
+    return effects.length;
+  }
+
+  /**
+   * Unfold (expand) all output blocks
+   */
+  unfoldAllOutputs(): number {
+    const effects: ReturnType<typeof unfoldEffect.of>[] = [];
+    const state = this.view.state;
+
+    // Get all currently folded ranges
+    const folded = foldedRanges(state);
+
+    // Iterate through folded ranges and unfold those that are output blocks
+    folded.between(0, state.doc.length, (from, to) => {
+      const line = state.doc.lineAt(from);
+      if (isOutputBlock(line.text)) {
+        effects.push(unfoldEffect.of({ from, to }));
+      }
+    });
+
+    if (effects.length > 0) {
+      this.view.dispatch({ effects });
+    }
+
+    return effects.length;
   }
 
   /**
@@ -362,6 +573,21 @@ export class MrmdEditor {
   }
 
   /**
+   * Set the current file path
+   * Used for execution queue state tracking
+   */
+  setFilePath(path: string | null): void {
+    this.filePathRef.current = path;
+  }
+
+  /**
+   * Get the current file path
+   */
+  getFilePath(): string | null {
+    return this.filePathRef.current;
+  }
+
+  /**
    * Get the current document as string
    */
   getDoc(): string {
@@ -379,6 +605,61 @@ export class MrmdEditor {
         insert: content,
       },
     });
+  }
+
+  /**
+   * Apply external change (e.g., from Claude Code or file watcher)
+   * Uses diff-based update to minimize document changes and work better with CRDT
+   *
+   * @param newContent The new document content
+   * @param origin Optional origin identifier (e.g., 'external', 'ai', 'claude-code')
+   * @returns true if content changed, false if no change
+   */
+  applyExternalChange(newContent: string, origin: string = 'external'): boolean {
+    const currentContent = this.view.state.doc.toString();
+
+    if (newContent === currentContent) {
+      return false; // No change
+    }
+
+    // Compute minimal diff (find common prefix and suffix)
+    let prefixLen = 0;
+    while (
+      prefixLen < currentContent.length &&
+      prefixLen < newContent.length &&
+      currentContent[prefixLen] === newContent[prefixLen]
+    ) {
+      prefixLen++;
+    }
+
+    let suffixLen = 0;
+    while (
+      suffixLen < currentContent.length - prefixLen &&
+      suffixLen < newContent.length - prefixLen &&
+      currentContent[currentContent.length - 1 - suffixLen] ===
+        newContent[newContent.length - 1 - suffixLen]
+    ) {
+      suffixLen++;
+    }
+
+    const deleteFrom = prefixLen;
+    const deleteTo = currentContent.length - suffixLen;
+    const insertText = newContent.slice(prefixLen, newContent.length - suffixLen);
+
+    // Apply as minimal change
+    this.view.dispatch({
+      changes: {
+        from: deleteFrom,
+        to: deleteTo,
+        insert: insertText,
+      },
+      annotations: [
+        // Add annotation for CRDT systems to identify external changes
+        { type: 'origin', value: origin } as any,
+      ],
+    });
+
+    return true;
   }
 
   /**
@@ -553,6 +834,31 @@ export class MrmdEditor {
       changes: { from, to, insert: codeBlock },
       selection: EditorSelection.cursor(from + 3 + lang.length + 1),
     });
+  }
+
+  // ============================================================================
+  // Execution State API
+  // ============================================================================
+
+  /**
+   * Check if any code execution is currently running
+   */
+  isExecutionRunning(): boolean {
+    return this.tracker?.isRunning() ?? false;
+  }
+
+  /**
+   * Cancel all running executions
+   */
+  cancelAllExecutions(): void {
+    this.tracker?.cancelAll();
+  }
+
+  /**
+   * Get the number of currently running executions
+   */
+  getRunningExecutionCount(): number {
+    return this.tracker?.getRunningCount() ?? 0;
   }
 
   // ============================================================================
