@@ -30,3 +30,6 @@ vscode/out/
 .mrmd/
 .env
 start.sh
+
+# Logs
+ai-server/logs/
