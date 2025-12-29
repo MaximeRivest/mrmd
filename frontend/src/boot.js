@@ -100,6 +100,9 @@ var init_AppState = __esm({
           scrollTop: 0,
           undoStack: [],
           redoStack: [],
+          // Track last saved content for conflict detection
+          lastSavedContent: content,
+          pendingExternalChange: null,
           ...options
         };
         this._openFiles.set(path, file);
@@ -138,6 +141,8 @@ var init_AppState = __esm({
         const file = this._openFiles.get(path);
         if (file) {
           file.modified = false;
+          file.lastSavedContent = file.content;
+          file.pendingExternalChange = null;
           if (mtime !== void 0) {
             file.mtime = mtime;
           }
@@ -192,6 +197,57 @@ var init_AppState = __esm({
             this._currentFilePath = newPath;
           }
           this._notifyFileChange(file, newPath);
+        }
+      }
+      // ========================================================================
+      // External Change Tracking
+      // ========================================================================
+      /**
+       * Record a pending external change for a file.
+       * This is used when an external change is detected but may need conflict resolution.
+       */
+      setPendingExternalChange(path, change) {
+        const file = this._openFiles.get(path);
+        if (file) {
+          file.pendingExternalChange = change;
+          this._notifyFileChange(file, path);
+        }
+      }
+      /**
+       * Get pending external change for a file (if any)
+       */
+      getPendingExternalChange(path) {
+        const file = this._openFiles.get(path);
+        return file?.pendingExternalChange ?? null;
+      }
+      /**
+       * Check if a file has local changes that would conflict with external changes.
+       * Compares current content with lastSavedContent.
+       */
+      hasLocalChanges(path) {
+        const file = this._openFiles.get(path);
+        if (!file)
+          return false;
+        if (file.modified)
+          return true;
+        if (file.lastSavedContent !== void 0 && file.content !== file.lastSavedContent) {
+          return true;
+        }
+        return false;
+      }
+      /**
+       * Apply an external change to a file's stored content.
+       * Called after the editor has been updated.
+       */
+      applyExternalChange(path, newContent, newMtime) {
+        const file = this._openFiles.get(path);
+        if (file) {
+          file.content = newContent;
+          file.lastSavedContent = newContent;
+          file.mtime = newMtime;
+          file.modified = false;
+          file.pendingExternalChange = null;
+          this._notifyFileChange(file, path);
         }
       }
       // ========================================================================
@@ -1309,6 +1365,12 @@ function initEditor() {
         appState.updateFileContent(path, content, true);
       }
     });
+    editor.tracker.setDocumentCallbacks({
+      applyChange: (newContent, origin) => {
+        editor.applyExternalChange(newContent, origin);
+      },
+      getContent: () => editor.getDoc()
+    });
   }
   initSelectionToolbar(container, {
     getContent: () => editor.getDoc(),
@@ -1500,20 +1562,57 @@ async function initCollaboration() {
   collab.onConnected((info) => {
     console.log("[Collab] Connected:", info.session_id);
     stopPollingFallback();
-    for (const path of appState.openFiles.keys()) {
+    const openPaths = Array.from(appState.openFiles.keys());
+    console.log("[Collab] Watching", openPaths.length, "open files:", openPaths);
+    for (const path of openPaths) {
+      console.log("[Collab] Sending watch request for:", path);
       collab.watchFile(path);
     }
+    catchUpMissedChanges();
   });
   collab.onDisconnected(() => {
     console.log("[Collab] Disconnected");
     startPollingFallback();
   });
-  collab.onFileChanged((payload) => {
-    console.log("[Collab] File changed:", payload.file_path);
-    handleExternalFileChange(payload.file_path);
+  collab.onFileChanged(async (payload) => {
+    const { file_path, event_type, mtime, content } = payload;
+    const source = detectExternalChangeSource(file_path);
+    console.log("[Collab] File changed via WebSocket:", file_path, {
+      event_type,
+      mtime,
+      source,
+      hasContent: content !== null && content !== void 0
+    });
+    await handleExternalFileChange(file_path, source, content);
   });
   collab.onFileSaved((payload) => {
     console.log("[Collab] File saved by:", payload.user_name);
+  });
+  collab.onWatchFileAck((payload) => {
+    console.log("[Collab] Watch file acknowledged:", payload.file_path, {
+      mtime: payload.mtime,
+      error: payload.error
+    });
+  });
+  collab.onPresence((payload) => {
+    for (const user of payload.users) {
+      if (user.user_type === "ai") {
+        trackAIUserJoin(user.session_id, user.user_name, payload.file_path);
+      }
+    }
+  });
+  collab.onUserJoined((payload) => {
+    const user = payload.user;
+    if (user.user_type === "ai") {
+      trackAIUserJoin(user.session_id, user.user_name, payload.file_path);
+      if (claudePresenceIndicator) {
+        claudePresenceIndicator.show(payload.file_path || "", 0);
+      }
+      console.log(`[Collab] AI user ${user.user_name} joined file ${payload.file_path}`);
+    }
+  });
+  collab.onUserLeft((payload) => {
+    trackAIUserLeave(payload.session_id);
   });
   const project = appState.project;
   if (project) {
@@ -1685,6 +1784,7 @@ async function openFile(path, options = {}) {
       mtime: file.mtime ?? null,
       modified: false
     });
+    externalChangeManager?.registerFile(path, file.content);
     if (services.collaboration.isConnected) {
       services.collaboration.watchFile(path);
     }
@@ -1756,6 +1856,7 @@ async function saveCurrentFileNow() {
   try {
     await services.documents.saveFile(filePath, file.content, { message: "execution" });
     appState.markFileSaved(filePath);
+    externalChangeManager?.markAsSaved(filePath, file.content);
     lastSaveTime = Date.now();
     updateFileIndicator();
   } catch (err) {
@@ -1774,6 +1875,7 @@ async function doAutosaveForFile(filePath) {
   try {
     await services.documents.saveFile(filePath, file.content, { message: "autosave" });
     appState.markFileSaved(filePath);
+    externalChangeManager?.markAsSaved(filePath, file.content);
     lastSaveTime = Date.now();
     if (appState.currentFilePath === filePath) {
       updateFileIndicator();
@@ -1851,6 +1953,7 @@ async function handleBeforeTabClose(path) {
   if (file?.modified) {
     try {
       await services.documents.saveFile(path, file.content);
+      externalChangeManager?.markAsSaved(path, file.content);
     } catch (err) {
       console.error("[Tabs] Error saving before close:", err);
     }
@@ -1858,6 +1961,7 @@ async function handleBeforeTabClose(path) {
 }
 async function handleTabClose(path) {
   terminalTabs?.closeTerminalsForFile(path);
+  externalChangeManager?.unregisterFile(path);
   if (services.collaboration.isConnected) {
     services.collaboration.unwatchFile(path);
   }
@@ -1990,11 +2094,54 @@ function showNotification(title, message, type = "info") {
   }
 }
 function initFileWatching() {
+  externalChangeManager = new ExternalChangeHandlerManager();
+  claudePresenceIndicator = new ClaudePresenceIndicator();
+  conflictResolutionUI = new ConflictResolutionUI();
+  externalChangeManager.setConflictStrategy("prompt");
+  externalChangeManager.onPauseAutosave = () => pauseAutosave();
+  externalChangeManager.onExternalChange = (info) => {
+    const filename = info.filePath.split("/").pop() || info.filePath;
+    const sourceLabel = info.source === "claude-code" ? "Claude" : info.source === "git" ? "Git" : "External edit";
+    const conflictLabel = info.hadConflict ? " (resolved)" : "";
+    if (info.source === "claude-code" && claudePresenceIndicator) {
+      claudePresenceIndicator.show(info.filePath, info.linesChanged);
+    }
+    showNotification(
+      `${sourceLabel} updated ${filename}`,
+      `${info.linesChanged} line${info.linesChanged !== 1 ? "s" : ""} changed${conflictLabel}`,
+      info.hadConflict ? "ai" : "info"
+    );
+  };
+  externalChangeManager.onConflict = async (conflictInfo) => {
+    console.log("[ExternalChangeManager] Conflict detected:", {
+      filePath: conflictInfo.filePath,
+      source: conflictInfo.source,
+      linesChanged: conflictInfo.linesChanged,
+      diffRegions: conflictInfo.diffRegions.length
+    });
+    appState.setPendingExternalChange(conflictInfo.filePath, {
+      source: conflictInfo.source,
+      detectedAt: Date.now(),
+      newContent: conflictInfo.externalContent,
+      hasConflict: true,
+      linesChanged: conflictInfo.linesChanged
+    });
+    const filename = conflictInfo.filePath.split("/").pop() || conflictInfo.filePath;
+    const sourceLabel = conflictInfo.source === "claude-code" ? "Claude" : "External";
+    showNotification(
+      `${sourceLabel} updated ${filename}`,
+      `${conflictInfo.linesChanged} lines changed (your local changes will be kept in undo history)`,
+      "ai"
+    );
+    return "accept";
+  };
+  console.log("[FileWatch] ExternalChangeHandlerManager initialized");
   if (noCollab) {
     startPollingFallback();
   } else {
     setTimeout(() => {
       if (!services.collaboration.isConnected) {
+        console.log("[FileWatch] WebSocket not connected after 3s, starting polling fallback");
         startPollingFallback();
       }
     }, 3e3);
@@ -2013,6 +2160,77 @@ function stopPollingFallback() {
     fileCheckInterval = null;
   }
 }
+function detectExternalChangeSource(filePath) {
+  if (activeAIUsers.size > 0) {
+    for (const [, user] of activeAIUsers) {
+      if (user.currentFile === filePath) {
+        return "claude-code";
+      }
+    }
+    const now = Date.now();
+    for (const [, user] of activeAIUsers) {
+      if (now - user.joinedAt < 3e4) {
+        return "claude-code";
+      }
+    }
+  }
+  if (filePath.includes(".git/") || filePath.includes(".git\\")) {
+    return "git";
+  }
+  const projectRoot = appState.project?.path;
+  if (projectRoot) {
+  }
+  return "external";
+}
+function trackAIUserJoin(sessionId, userName, currentFile) {
+  activeAIUsers.set(sessionId, {
+    userName,
+    joinedAt: Date.now(),
+    currentFile
+  });
+  console.log(`[ClaudePresence] AI user joined: ${userName} (${sessionId})`);
+  if (claudePresenceIndicator && currentFile) {
+    claudePresenceIndicator.show(currentFile, 0);
+  }
+}
+function trackAIUserLeave(sessionId) {
+  const user = activeAIUsers.get(sessionId);
+  if (user) {
+    console.log(`[ClaudePresence] AI user left: ${user.userName} (${sessionId})`);
+    activeAIUsers.delete(sessionId);
+  }
+}
+async function catchUpMissedChanges() {
+  const openFiles = appState.openFiles;
+  if (openFiles.size === 0)
+    return;
+  console.log("[FileWatch] Catching up on missed changes...");
+  const paths = Array.from(openFiles.keys());
+  try {
+    const result = await services.documents.getMtimes(paths);
+    let changesFound = 0;
+    for (const [path, newMtime] of Object.entries(result.mtimes)) {
+      if (newMtime === null)
+        continue;
+      const file = openFiles.get(path);
+      if (!file?.mtime)
+        continue;
+      if (Math.abs(newMtime - file.mtime) > 0.01) {
+        console.log("[FileWatch] Catch-up: File changed while disconnected:", path);
+        const source = detectExternalChangeSource(path);
+        await handleExternalFileChange(path, source);
+        changesFound++;
+      }
+    }
+    if (changesFound > 0) {
+      console.log(`[FileWatch] Catch-up complete: ${changesFound} file(s) updated`);
+    } else {
+      console.log("[FileWatch] Catch-up complete: No missed changes");
+    }
+  } catch (err) {
+    console.warn("[FileWatch] Catch-up check failed:", err);
+  }
+}
 async function checkFileChanges() {
   const openFiles = appState.openFiles;
   if (openFiles.size === 0)
@@ -2027,41 +2245,77 @@ async function checkFileChanges() {
       if (!file?.mtime)
         continue;
       if (Math.abs(newMtime - file.mtime) > 0.01) {
-        console.log("[FileWatch] File changed:", path);
-        await handleExternalFileChange(path);
+        const source = detectExternalChangeSource(path);
+        console.log("[FileWatch] Polling detected change:", path, { source });
+        await handleExternalFileChange(path, source);
       }
     }
   } catch (err) {
   }
 }
-async function handleExternalFileChange(path) {
-  try {
-    const file = appState.openFiles.get(path);
-    if (!file)
-      return;
-    if (file.modified) {
-      console.log("[FileWatch] Skipping update - file has unsaved local changes:", path);
-      return;
-    }
-    const fileData = await services.documents.readFile(path);
-    const newContent = fileData.content;
-    if (path === appState.currentFilePath) {
-      const oldContent = getContent();
-      if (newContent !== oldContent) {
-        const scrollTop = container.scrollTop;
-        const changed = editor.applyExternalChange(newContent, "external");
-        if (changed) {
-          rawTextarea.value = newContent;
-          requestAnimationFrame(() => {
-            container.scrollTop = scrollTop;
-          });
-        }
-      }
-    }
-    appState.openFile(path, newContent, { mtime: fileData.mtime ?? null });
-  } catch (err) {
-    console.error("[FileWatch] Error handling file change:", err);
+async function handleExternalFileChange(path, source = "unknown", capturedContent) {
+  const file = appState.openFiles.get(path);
+  if (!file) {
+    console.log("[FileWatch] Ignoring change for unopened file:", path);
+    return;
   }
+  if (externalChangeManager) {
+    await externalChangeManager.handleFileChanged(
+      path,
+      source,
+      // loadFile callback - if capturedContent is provided from WebSocket, use it
+      // This prevents race conditions where autosave could overwrite external changes
+      async () => {
+        if (capturedContent !== void 0 && capturedContent !== null) {
+          console.log("[FileWatch] Using captured content from WebSocket, length:", capturedContent.length);
+          return capturedContent;
+        }
+        console.log("[FileWatch] Reading content from disk (no captured content)");
+        const fileData = await services.documents.readFile(path);
+        return fileData.content;
+      },
+      // applyChange callback - returns true if change was applied
+      (newContent) => {
+        return applyExternalChangeToFile(path, newContent, source);
+      },
+      // getCurrentContent callback
+      () => {
+        return path === appState.currentFilePath ? getContent() : file.content;
+      }
+    );
+  } else {
+    console.log("[FileWatch] Manager not initialized, applying directly");
+    try {
+      const content = capturedContent ?? (await services.documents.readFile(path)).content;
+      applyExternalChangeToFile(path, content, source);
+    } catch (err) {
+      console.error("[FileWatch] Error handling file change:", err);
+      showNotification("File sync error", `Failed to sync ${path}: ${err}`, "error");
+    }
+  }
+}
+function applyExternalChangeToFile(path, newContent, source) {
+  const file = appState.openFiles.get(path);
+  if (!file)
+    return false;
+  const isCurrentFile = path === appState.currentFilePath;
+  const currentContent = isCurrentFile ? getContent() : file.content;
+  if (newContent === currentContent) {
+    console.log("[FileWatch] Content unchanged:", path);
+    return false;
+  }
+  if (isCurrentFile) {
+    const scrollTop = container.scrollTop;
+    const changed = editor.applyExternalChange(newContent, source);
+    if (changed) {
+      rawTextarea.value = newContent;
+      requestAnimationFrame(() => {
+        container.scrollTop = scrollTop;
+      });
+    }
+  }
+  appState.applyExternalChange(path, newContent, null);
+  return true;
 }
 function getAiContext() {
   const selInfo = getSelectionInfo();
@@ -2244,7 +2498,7 @@ async function loadInitialState() {
   await SessionState2.initialize();
   HomeScreen.show();
 }
-var services, editor, ipython, ipythonExecutor, aiClient, fileTabs, fileBrowser, terminalTabs, notificationManager, aiPalette, historyPanel, interfaceManager, aiActionHandler, container, rawTextarea, cursorPosEl, execStatusEl, browserRoot, documentBasePath, silentUpdate, AUTOSAVE_DELAY, AUTOSAVE_MAX_INTERVAL, autosaveTimer, lastSaveTime, autosavePaused, fileCheckInterval, noCollab, currentFileLoadId;
+var services, editor, ipython, ipythonExecutor, aiClient, fileTabs, fileBrowser, terminalTabs, notificationManager, aiPalette, historyPanel, interfaceManager, aiActionHandler, container, rawTextarea, cursorPosEl, execStatusEl, browserRoot, documentBasePath, silentUpdate, AUTOSAVE_DELAY, AUTOSAVE_MAX_INTERVAL, autosaveTimer, lastSaveTime, autosavePaused, fileCheckInterval, noCollab, currentFileLoadId, externalChangeManager, ExternalChangeHandlerManager, ClaudePresenceIndicator, claudePresenceIndicator, ConflictResolutionUI, conflictResolutionUI, activeAIUsers;
 var init_codes = __esm({
   "src/apps/codes/index.ts"() {
     "use strict";
@@ -2267,6 +2521,1069 @@ var init_codes = __esm({
     fileCheckInterval = null;
     noCollab = false;
     currentFileLoadId = 0;
+    externalChangeManager = null;
+    ExternalChangeHandlerManager = class {
+      constructor() {
+        __publicField(this, "handlers", /* @__PURE__ */ new Map());
+        __publicField(this, "conflictStrategy", "external-wins");
+        __publicField(this, "debounceMs", 100);
+        /**
+         * Callback for conflict resolution (Step 6 will implement the UI)
+         * Returns: 'accept' (use external), 'reject' (keep local), 'merge' (attempt merge)
+         */
+        __publicField(this, "onConflict", null);
+        /**
+         * Callback when external change is applied
+         */
+        __publicField(this, "onExternalChange", null);
+        /**
+         * Callback to pause autosave during external change processing
+         * Returns a function to resume autosave
+         */
+        __publicField(this, "onPauseAutosave", null);
+      }
+      /**
+       * Set the conflict resolution strategy
+       */
+      setConflictStrategy(strategy) {
+        this.conflictStrategy = strategy;
+      }
+      /**
+       * Register a file for external change handling
+       * Called when a file is opened
+       */
+      registerFile(filePath, initialContent) {
+        this.unregisterFile(filePath);
+        const handler = {
+          filePath,
+          lastKnownContent: initialContent,
+          lastKnownMtime: Date.now(),
+          pendingCheck: null,
+          pendingResumeAutosave: null,
+          destroyed: false,
+          capturedExternalContent: null,
+          capturedSource: null
+        };
+        this.handlers.set(filePath, handler);
+        console.log("[ExternalChangeManager] Registered file:", filePath);
+      }
+      /**
+       * Unregister a file (called when file is closed)
+       */
+      unregisterFile(filePath) {
+        const handler = this.handlers.get(filePath);
+        if (handler) {
+          handler.destroyed = true;
+          if (handler.pendingCheck) {
+            clearTimeout(handler.pendingCheck);
+          }
+          if (handler.pendingResumeAutosave) {
+            handler.pendingResumeAutosave();
+            handler.pendingResumeAutosave = null;
+          }
+          this.handlers.delete(filePath);
+          console.log("[ExternalChangeManager] Unregistered file:", filePath);
+        }
+      }
+      /**
+       * Mark a file as saved (updates lastKnownContent)
+       * Called after save operations
+       */
+      markAsSaved(filePath, content) {
+        const handler = this.handlers.get(filePath);
+        if (handler) {
+          handler.lastKnownContent = content;
+          handler.lastKnownMtime = Date.now();
+        }
+      }
+      /**
+       * Check if a file has local changes relative to last known state
+       */
+      hasLocalChanges(filePath, currentContent) {
+        const handler = this.handlers.get(filePath);
+        if (!handler)
+          return false;
+        return currentContent !== handler.lastKnownContent;
+      }
+      /**
+       * Handle an external file change event (debounced)
+       *
+       * IMPORTANT: We capture the file content IMMEDIATELY when the event arrives,
+       * not after the debounce delay. This prevents a race condition where autosave
+       * could overwrite external changes before we can detect them.
+       */
+      async handleFileChanged(filePath, source, loadFile, applyChange, getCurrentContent) {
+        const handler = this.handlers.get(filePath);
+        if (!handler || handler.destroyed) {
+          console.log("[ExternalChangeManager] No handler for file:", filePath);
+          return;
+        }
+        if (!handler.pendingResumeAutosave) {
+          handler.pendingResumeAutosave = this.onPauseAutosave?.() ?? null;
+        }
+        try {
+          const capturedContent = await loadFile();
+          handler.capturedExternalContent = capturedContent;
+          handler.capturedSource = source;
+          console.log("[ExternalChangeManager] Captured external content immediately, length:", capturedContent.length);
+        } catch (err) {
+          console.error("[ExternalChangeManager] Failed to capture content:", err);
+          handler.pendingResumeAutosave?.();
+          handler.pendingResumeAutosave = null;
+          return;
+        }
+        if (handler.pendingCheck) {
+          clearTimeout(handler.pendingCheck);
+        }
+        handler.pendingCheck = setTimeout(async () => {
+          handler.pendingCheck = null;
+          const resumeAutosave = handler.pendingResumeAutosave;
+          handler.pendingResumeAutosave = null;
+          const capturedContent = handler.capturedExternalContent;
+          const capturedSource = handler.capturedSource || source;
+          handler.capturedExternalContent = null;
+          handler.capturedSource = null;
+          if (!capturedContent) {
+            console.log("[ExternalChangeManager] No captured content, skipping");
+            resumeAutosave?.();
+            return;
+          }
+          try {
+            await this.checkAndApplyChanges(
+              handler,
+              capturedSource,
+              capturedContent,
+              // Pass the captured content directly
+              applyChange,
+              getCurrentContent
+            );
+          } finally {
+            resumeAutosave?.();
+          }
+        }, this.debounceMs);
+      }
+      /**
+       * Actually check and apply changes (after debounce)
+       *
+       * @param capturedContent - Content captured immediately when WebSocket event arrived
+       *                          This is NOT re-read from disk to avoid race conditions
+       */
+      async checkAndApplyChanges(handler, source, capturedContent, applyChange, getCurrentContent) {
+        if (handler.destroyed)
+          return;
+        try {
+          const newContent = capturedContent;
+          const currentContent = getCurrentContent();
+          if (newContent === handler.lastKnownContent) {
+            console.log("[ExternalChangeManager] No external change (disk matches last known state)");
+            return;
+          }
+          if (newContent === currentContent) {
+            console.log("[ExternalChangeManager] Editor already has this content, updating lastKnown");
+            handler.lastKnownContent = newContent;
+            handler.lastKnownMtime = Date.now();
+            return;
+          }
+          const hasLocalChanges = currentContent !== handler.lastKnownContent;
+          const linesChanged = this.countLinesChanged(handler.lastKnownContent, newContent);
+          console.log("[ExternalChangeManager] External change detected:", {
+            filePath: handler.filePath,
+            source,
+            hasLocalChanges,
+            linesChanged
+          });
+          let shouldApply = true;
+          let canAutoMerge = false;
+          let mergedContent = null;
+          if (hasLocalChanges) {
+            const baseContent = handler.lastKnownContent;
+            const localChangedLines = this.getChangedLineRanges(baseContent, currentContent);
+            const externalChangedLines = this.getChangedLineRanges(baseContent, newContent);
+            const hasOverlap = this.rangesOverlap(localChangedLines, externalChangedLines);
+            console.log("[ExternalChangeManager] Checking merge possibility:", {
+              localRanges: localChangedLines,
+              externalRanges: externalChangedLines,
+              hasOverlap
+            });
+            if (!hasOverlap && localChangedLines.length > 0 && externalChangedLines.length > 0) {
+              mergedContent = this.attemptThreeWayMerge(baseContent, currentContent, newContent);
+              if (mergedContent !== null) {
+                canAutoMerge = true;
+                console.log("[ExternalChangeManager] Auto-merging non-overlapping changes");
+              }
+            }
+            if (!canAutoMerge) {
+              const conflictInfo = {
+                filePath: handler.filePath,
+                localContent: currentContent,
+                externalContent: newContent,
+                source,
+                linesChanged,
+                diffRegions: this.computeDiff(currentContent, newContent)
+              };
+              if (this.conflictStrategy === "prompt" && this.onConflict) {
+                const decision = await this.onConflict(conflictInfo);
+                shouldApply = decision === "accept" || decision === "merge";
+                if (decision === "reject") {
+                  console.log("[ExternalChangeManager] User rejected external changes");
+                }
+              } else if (this.conflictStrategy === "local-wins") {
+                shouldApply = false;
+                console.log("[ExternalChangeManager] Local wins, ignoring external change");
+              }
+            }
+          }
+          if (shouldApply || canAutoMerge) {
+            const contentToApply = canAutoMerge && mergedContent !== null ? mergedContent : newContent;
+            const changed = applyChange(contentToApply);
+            if (changed) {
+              handler.lastKnownContent = newContent;
+              handler.lastKnownMtime = Date.now();
+              this.onExternalChange?.({
+                filePath: handler.filePath,
+                source,
+                linesChanged,
+                hadConflict: hasLocalChanges && !canAutoMerge
+              });
+              if (canAutoMerge) {
+                console.log("[ExternalChangeManager] Successfully auto-merged changes");
+              }
+            }
+          }
+        } catch (error) {
+          console.error("[ExternalChangeManager] Failed to handle file change:", error);
+        }
+      }
+      /**
+       * Compute diff regions between two content strings
+       */
+      computeDiff(local, external) {
+        const localLines = local.split("\n");
+        const externalLines = external.split("\n");
+        const regions = [];
+        let i = 0;
+        let j = 0;
+        while (i < localLines.length || j < externalLines.length) {
+          while (i < localLines.length && j < externalLines.length && localLines[i] === externalLines[j]) {
+            i++;
+            j++;
+          }
+          if (i >= localLines.length && j >= externalLines.length) {
+            break;
+          }
+          const startLine = i;
+          const diffLocalLines = [];
+          const diffExternalLines = [];
+          while (i < localLines.length && j < externalLines.length && localLines[i] !== externalLines[j]) {
+            diffLocalLines.push(localLines[i]);
+            diffExternalLines.push(externalLines[j]);
+            i++;
+            j++;
+          }
+          while (i < localLines.length && (j >= externalLines.length || localLines[i] !== externalLines[j])) {
+            diffLocalLines.push(localLines[i]);
+            i++;
+          }
+          while (j < externalLines.length && (i >= localLines.length || localLines[i] !== externalLines[j])) {
+            diffExternalLines.push(externalLines[j]);
+            j++;
+          }
+          if (diffLocalLines.length > 0 || diffExternalLines.length > 0) {
+            regions.push({
+              startLine,
+              endLine: Math.max(startLine + diffLocalLines.length, startLine + diffExternalLines.length),
+              localLines: diffLocalLines,
+              externalLines: diffExternalLines
+            });
+          }
+        }
+        return regions;
+      }
+      /**
+       * Count approximate number of lines changed
+       */
+      countLinesChanged(oldContent, newContent) {
+        const oldLines = oldContent.split("\n");
+        const newLines = newContent.split("\n");
+        let changed = 0;
+        const maxLen = Math.max(oldLines.length, newLines.length);
+        for (let i = 0; i < maxLen; i++) {
+          if (oldLines[i] !== newLines[i]) {
+            changed++;
+          }
+        }
+        return changed;
+      }
+      /**
+       * Get line ranges that changed between base and modified content.
+       * Returns array of [start, end] tuples (0-indexed, inclusive).
+       */
+      getChangedLineRanges(base, modified) {
+        const baseLines = base.split("\n");
+        const modLines = modified.split("\n");
+        const ranges = [];
+        let i = 0;
+        while (i < baseLines.length || i < modLines.length) {
+          while (i < baseLines.length && i < modLines.length && baseLines[i] === modLines[i]) {
+            i++;
+          }
+          if (i >= baseLines.length && i >= modLines.length)
+            break;
+          const start = i;
+          while (i < baseLines.length || i < modLines.length) {
+            if (i < baseLines.length && i < modLines.length && baseLines[i] === modLines[i]) {
+              break;
+            }
+            i++;
+          }
+          ranges.push([start, i - 1]);
+        }
+        return ranges;
+      }
+      /**
+       * Check if any two ranges overlap.
+       */
+      rangesOverlap(ranges1, ranges2) {
+        for (const [s1, e1] of ranges1) {
+          for (const [s2, e2] of ranges2) {
+            if (s1 <= e2 && s2 <= e1) {
+              return true;
+            }
+          }
+        }
+        return false;
+      }
+      /**
+       * Attempt a simple 3-way merge.
+       * Works when local and external changes don't overlap.
+       *
+       * Strategy: Start with external content, then apply local changes
+       * that aren't overwritten by external changes.
+       */
+      attemptThreeWayMerge(base, local, external) {
+        try {
+          const baseLines = base.split("\n");
+          const localLines = local.split("\n");
+          const externalLines = external.split("\n");
+          const localChanges = this.getLineChanges(baseLines, localLines);
+          const externalChanges = this.getLineChanges(baseLines, externalLines);
+          const result = [...externalLines];
+          for (const [lineNum, localLine] of localChanges) {
+            const externalChangedThis = externalChanges.some(([ln]) => ln === lineNum);
+            if (!externalChangedThis) {
+              if (result.length > lineNum) {
+                result[lineNum] = localLine;
+              }
+            }
+          }
+          if (localLines.length > baseLines.length) {
+            const appendStart = baseLines.length;
+            const localAppended = localLines.slice(appendStart);
+            if (externalLines.length <= baseLines.length) {
+              result.push(...localAppended);
+            } else if (externalLines.length === baseLines.length + (externalLines.length - baseLines.length)) {
+              result.push(...localAppended);
+            }
+          }
+          return result.join("\n");
+        } catch {
+          return null;
+        }
+      }
+      /**
+       * Get map of line number -> new content for changed lines
+       */
+      getLineChanges(base, modified) {
+        const changes = [];
+        const minLen = Math.min(base.length, modified.length);
+        for (let i = 0; i < minLen; i++) {
+          if (base[i] !== modified[i]) {
+            changes.push([i, modified[i]]);
+          }
+        }
+        return changes;
+      }
+      /**
+       * Get handler for a file (for debugging/testing)
+       */
+      getHandler(filePath) {
+        return this.handlers.get(filePath);
+      }
+      /**
+       * Get all registered file paths
+       */
+      getRegisteredFiles() {
+        return Array.from(this.handlers.keys());
+      }
+      /**
+       * Destroy all handlers
+       */
+      destroy() {
+        for (const handler of this.handlers.values()) {
+          handler.destroyed = true;
+          if (handler.pendingCheck) {
+            clearTimeout(handler.pendingCheck);
+          }
+        }
+        this.handlers.clear();
+      }
+    };
+    ClaudePresenceIndicator = class {
+      constructor() {
+        __publicField(this, "state", {
+          activeFiles: /* @__PURE__ */ new Map(),
+          indicatorEl: null,
+          dismissTimeout: null,
+          isVisible: false
+        });
+        /** How long to show the indicator after last activity (ms) */
+        __publicField(this, "DISMISS_DELAY", 5e3);
+        /** Color for Claude's presence (purple/violet to distinguish from humans) */
+        __publicField(this, "CLAUDE_COLOR", "#8b5cf6");
+        this.createIndicatorElement();
+      }
+      /**
+       * Create the indicator DOM element
+       */
+      createIndicatorElement() {
+        if (document.getElementById("claude-presence-indicator")) {
+          this.state.indicatorEl = document.getElementById("claude-presence-indicator");
+          return;
+        }
+        const indicator = document.createElement("div");
+        indicator.id = "claude-presence-indicator";
+        indicator.className = "claude-presence-indicator";
+        indicator.style.cssText = `
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: ${this.CLAUDE_COLOR};
+            color: white;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+            z-index: 1000;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: opacity 0.2s ease, transform 0.2s ease;
+            pointer-events: none;
+        `;
+        const icon = document.createElement("span");
+        icon.textContent = "\u{1F916}";
+        icon.style.fontSize = "16px";
+        indicator.appendChild(icon);
+        const text = document.createElement("span");
+        text.className = "claude-presence-text";
+        text.textContent = "Claude is editing...";
+        indicator.appendChild(text);
+        const dot = document.createElement("span");
+        dot.className = "claude-presence-dot";
+        dot.style.cssText = `
+            width: 8px;
+            height: 8px;
+            background: white;
+            border-radius: 50%;
+            animation: claude-presence-pulse 1.5s ease-in-out infinite;
+        `;
+        indicator.appendChild(dot);
+        if (!document.getElementById("claude-presence-styles")) {
+          const style = document.createElement("style");
+          style.id = "claude-presence-styles";
+          style.textContent = `
+                @keyframes claude-presence-pulse {
+                    0%, 100% { opacity: 1; transform: scale(1); }
+                    50% { opacity: 0.5; transform: scale(0.8); }
+                }
+                .claude-presence-indicator.visible {
+                    opacity: 1 !important;
+                    transform: translateY(0) !important;
+                }
+            `;
+          document.head.appendChild(style);
+        }
+        document.body.appendChild(indicator);
+        this.state.indicatorEl = indicator;
+      }
+      /**
+       * Show the Claude presence indicator
+       */
+      show(filePath, linesChanged = 0) {
+        const now = Date.now();
+        const existing = this.state.activeFiles.get(filePath);
+        if (existing) {
+          existing.lastActivity = now;
+          existing.linesChanged += linesChanged;
+        } else {
+          this.state.activeFiles.set(filePath, {
+            startedAt: now,
+            lastActivity: now,
+            linesChanged
+          });
+        }
+        this.updateIndicatorText();
+        if (!this.state.isVisible && this.state.indicatorEl) {
+          this.state.indicatorEl.classList.add("visible");
+          this.state.isVisible = true;
+        }
+        this.scheduleDismiss();
+      }
+      /**
+       * Update the indicator text based on active files
+       */
+      updateIndicatorText() {
+        if (!this.state.indicatorEl)
+          return;
+        const textEl = this.state.indicatorEl.querySelector(".claude-presence-text");
+        if (!textEl)
+          return;
+        const fileCount = this.state.activeFiles.size;
+        if (fileCount === 0) {
+          textEl.textContent = "Claude is editing...";
+        } else if (fileCount === 1) {
+          const [filePath] = this.state.activeFiles.keys();
+          const fileName = filePath.split("/").pop() || filePath;
+          textEl.textContent = `Claude is editing ${fileName}`;
+        } else {
+          textEl.textContent = `Claude is editing ${fileCount} files`;
+        }
+      }
+      /**
+       * Schedule auto-dismissal of the indicator
+       */
+      scheduleDismiss() {
+        if (this.state.dismissTimeout) {
+          clearTimeout(this.state.dismissTimeout);
+        }
+        this.state.dismissTimeout = setTimeout(() => {
+          this.hide();
+        }, this.DISMISS_DELAY);
+      }
+      /**
+       * Hide the Claude presence indicator
+       */
+      hide() {
+        if (this.state.indicatorEl) {
+          this.state.indicatorEl.classList.remove("visible");
+        }
+        this.state.isVisible = false;
+        this.state.activeFiles.clear();
+        if (this.state.dismissTimeout) {
+          clearTimeout(this.state.dismissTimeout);
+          this.state.dismissTimeout = null;
+        }
+      }
+      /**
+       * Check if Claude is currently active on any file
+       */
+      isActive() {
+        return this.state.activeFiles.size > 0;
+      }
+      /**
+       * Check if Claude is active on a specific file
+       */
+      isActiveOnFile(filePath) {
+        return this.state.activeFiles.has(filePath);
+      }
+      /**
+       * Destroy the indicator
+       */
+      destroy() {
+        this.hide();
+        if (this.state.indicatorEl) {
+          this.state.indicatorEl.remove();
+          this.state.indicatorEl = null;
+        }
+      }
+    };
+    claudePresenceIndicator = null;
+    ConflictResolutionUI = class {
+      constructor() {
+        __publicField(this, "modalEl", null);
+        __publicField(this, "resolvePromise", null);
+        __publicField(this, "currentConflict", null);
+        /** Colors matching the design system */
+        __publicField(this, "COLORS", {
+          primary: "#3b82f6",
+          // Blue for primary actions
+          danger: "#ef4444",
+          // Red for destructive/reject
+          success: "#22c55e",
+          // Green for additions
+          warning: "#f59e0b",
+          // Amber for warnings
+          muted: "#6b7280",
+          // Gray for secondary text
+          background: "#1f2937",
+          // Dark background
+          surface: "#374151",
+          // Slightly lighter surface
+          border: "#4b5563",
+          // Border color
+          text: "#f9fafb",
+          // Light text
+          textMuted: "#9ca3af",
+          // Muted text
+          diffAdd: "rgba(34, 197, 94, 0.2)",
+          // Green background for additions
+          diffRemove: "rgba(239, 68, 68, 0.2)",
+          // Red background for removals
+          claude: "#8b5cf6"
+          // Claude's purple
+        });
+        this.injectStyles();
+      }
+      /**
+       * Inject CSS styles for the conflict resolution modal
+       */
+      injectStyles() {
+        if (document.getElementById("conflict-resolution-styles"))
+          return;
+        const style = document.createElement("style");
+        style.id = "conflict-resolution-styles";
+        style.textContent = `
+            .conflict-modal-overlay {
+                position: fixed;
+                inset: 0;
+                background: rgba(0, 0, 0, 0.6);
+                backdrop-filter: blur(4px);
+                z-index: 10000;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                opacity: 0;
+                transition: opacity 0.2s ease;
+            }
+            .conflict-modal-overlay.visible {
+                opacity: 1;
+            }
+            .conflict-modal {
+                background: ${this.COLORS.background};
+                border: 1px solid ${this.COLORS.border};
+                border-radius: 12px;
+                width: 90%;
+                max-width: 600px;
+                max-height: 80vh;
+                display: flex;
+                flex-direction: column;
+                box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+                transform: scale(0.95) translateY(10px);
+                transition: transform 0.2s ease;
+            }
+            .conflict-modal-overlay.visible .conflict-modal {
+                transform: scale(1) translateY(0);
+            }
+            .conflict-modal-header {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                padding: 16px 20px;
+                border-bottom: 1px solid ${this.COLORS.border};
+            }
+            .conflict-modal-icon {
+                font-size: 24px;
+            }
+            .conflict-modal-title {
+                flex: 1;
+            }
+            .conflict-modal-title h2 {
+                margin: 0;
+                font-size: 16px;
+                font-weight: 600;
+                color: ${this.COLORS.text};
+            }
+            .conflict-modal-title p {
+                margin: 4px 0 0;
+                font-size: 13px;
+                color: ${this.COLORS.textMuted};
+            }
+            .conflict-modal-body {
+                padding: 16px 20px;
+                overflow-y: auto;
+                flex: 1;
+            }
+            .conflict-summary {
+                display: flex;
+                gap: 16px;
+                margin-bottom: 16px;
+            }
+            .conflict-stat {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                font-size: 13px;
+                color: ${this.COLORS.textMuted};
+            }
+            .conflict-stat-value {
+                color: ${this.COLORS.text};
+                font-weight: 500;
+            }
+            .conflict-diff-toggle {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 8px 12px;
+                background: ${this.COLORS.surface};
+                border: 1px solid ${this.COLORS.border};
+                border-radius: 6px;
+                color: ${this.COLORS.text};
+                font-size: 13px;
+                cursor: pointer;
+                margin-bottom: 12px;
+                transition: background 0.15s ease;
+            }
+            .conflict-diff-toggle:hover {
+                background: ${this.COLORS.border};
+            }
+            .conflict-diff-toggle .arrow {
+                transition: transform 0.2s ease;
+            }
+            .conflict-diff-toggle.expanded .arrow {
+                transform: rotate(90deg);
+            }
+            .conflict-diff-container {
+                display: none;
+                border: 1px solid ${this.COLORS.border};
+                border-radius: 6px;
+                overflow: hidden;
+                margin-bottom: 16px;
+            }
+            .conflict-diff-container.visible {
+                display: block;
+            }
+            .conflict-diff-header {
+                display: flex;
+                background: ${this.COLORS.surface};
+                border-bottom: 1px solid ${this.COLORS.border};
+                font-size: 12px;
+                font-weight: 500;
+            }
+            .conflict-diff-header > div {
+                flex: 1;
+                padding: 8px 12px;
+                color: ${this.COLORS.textMuted};
+            }
+            .conflict-diff-header > div:first-child {
+                border-right: 1px solid ${this.COLORS.border};
+            }
+            .conflict-diff-content {
+                display: flex;
+                font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+                font-size: 12px;
+                line-height: 1.5;
+                max-height: 300px;
+                overflow-y: auto;
+            }
+            .conflict-diff-side {
+                flex: 1;
+                padding: 8px 0;
+                overflow-x: auto;
+            }
+            .conflict-diff-side:first-child {
+                border-right: 1px solid ${this.COLORS.border};
+            }
+            .conflict-diff-line {
+                display: flex;
+                padding: 0 12px;
+                min-height: 20px;
+            }
+            .conflict-diff-line.removed {
+                background: ${this.COLORS.diffRemove};
+            }
+            .conflict-diff-line.added {
+                background: ${this.COLORS.diffAdd};
+            }
+            .conflict-diff-line-number {
+                width: 32px;
+                color: ${this.COLORS.muted};
+                text-align: right;
+                padding-right: 12px;
+                user-select: none;
+                flex-shrink: 0;
+            }
+            .conflict-diff-line-content {
+                flex: 1;
+                white-space: pre;
+                color: ${this.COLORS.text};
+            }
+            .conflict-modal-footer {
+                display: flex;
+                gap: 12px;
+                padding: 16px 20px;
+                border-top: 1px solid ${this.COLORS.border};
+                justify-content: flex-end;
+            }
+            .conflict-btn {
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: 500;
+                cursor: pointer;
+                transition: all 0.15s ease;
+                border: 1px solid transparent;
+            }
+            .conflict-btn-secondary {
+                background: ${this.COLORS.surface};
+                border-color: ${this.COLORS.border};
+                color: ${this.COLORS.text};
+            }
+            .conflict-btn-secondary:hover {
+                background: ${this.COLORS.border};
+            }
+            .conflict-btn-danger {
+                background: transparent;
+                border-color: ${this.COLORS.danger};
+                color: ${this.COLORS.danger};
+            }
+            .conflict-btn-danger:hover {
+                background: ${this.COLORS.danger};
+                color: white;
+            }
+            .conflict-btn-primary {
+                background: ${this.COLORS.primary};
+                color: white;
+            }
+            .conflict-btn-primary:hover {
+                background: #2563eb;
+            }
+            .conflict-btn-claude {
+                background: ${this.COLORS.claude};
+                color: white;
+            }
+            .conflict-btn-claude:hover {
+                background: #7c3aed;
+            }
+        `;
+        document.head.appendChild(style);
+      }
+      /**
+       * Show the conflict resolution modal
+       * Returns a promise that resolves with the user's decision
+       */
+      show(conflictInfo) {
+        return new Promise((resolve) => {
+          this.resolvePromise = resolve;
+          this.currentConflict = conflictInfo;
+          this.createModal(conflictInfo);
+        });
+      }
+      /**
+       * Create and display the modal
+       */
+      createModal(info) {
+        this.destroy();
+        const filename = info.filePath.split("/").pop() || info.filePath;
+        const sourceLabel = this.getSourceLabel(info.source);
+        const sourceIcon = this.getSourceIcon(info.source);
+        const overlay = document.createElement("div");
+        overlay.className = "conflict-modal-overlay";
+        overlay.onclick = (e) => {
+          if (e.target === overlay) {
+            this.handleDecision("reject");
+          }
+        };
+        const modal = document.createElement("div");
+        modal.className = "conflict-modal";
+        modal.innerHTML = `
+            <div class="conflict-modal-header">
+                <span class="conflict-modal-icon">${sourceIcon}</span>
+                <div class="conflict-modal-title">
+                    <h2>Changes from ${sourceLabel}</h2>
+                    <p>${filename} was modified while you had unsaved changes</p>
+                </div>
+            </div>
+            <div class="conflict-modal-body">
+                <div class="conflict-summary">
+                    <div class="conflict-stat">
+                        <span>Lines changed:</span>
+                        <span class="conflict-stat-value">${info.linesChanged}</span>
+                    </div>
+                    <div class="conflict-stat">
+                        <span>Regions:</span>
+                        <span class="conflict-stat-value">${info.diffRegions.length}</span>
+                    </div>
+                </div>
+                <button class="conflict-diff-toggle" id="conflict-diff-toggle">
+                    <span class="arrow">\u25B6</span>
+                    <span>View differences</span>
+                </button>
+                <div class="conflict-diff-container" id="conflict-diff-container">
+                    ${this.renderDiff(info)}
+                </div>
+                <p style="font-size: 13px; color: ${this.COLORS.textMuted}; margin: 0;">
+                    Choose how to handle this conflict:
+                </p>
+            </div>
+            <div class="conflict-modal-footer">
+                <span style="font-size: 11px; color: ${this.COLORS.muted}; margin-right: auto;">
+                    <kbd style="padding: 2px 6px; background: ${this.COLORS.surface}; border-radius: 3px; font-family: inherit;">Esc</kbd> Keep \xB7
+                    <kbd style="padding: 2px 6px; background: ${this.COLORS.surface}; border-radius: 3px; font-family: inherit;">Enter</kbd> Accept
+                </span>
+                <button class="conflict-btn conflict-btn-secondary" id="conflict-btn-reject">
+                    Keep my changes
+                </button>
+                <button class="conflict-btn ${info.source === "claude-code" ? "conflict-btn-claude" : "conflict-btn-primary"}" id="conflict-btn-accept">
+                    ${info.source === "claude-code" ? "Accept Claude's changes" : "Accept external changes"}
+                </button>
+            </div>
+        `;
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+        this.modalEl = overlay;
+        const diffToggle = modal.querySelector("#conflict-diff-toggle");
+        const diffContainer = modal.querySelector("#conflict-diff-container");
+        diffToggle?.addEventListener("click", () => {
+          diffToggle.classList.toggle("expanded");
+          diffContainer.classList.toggle("visible");
+        });
+        const acceptBtn = modal.querySelector("#conflict-btn-accept");
+        const rejectBtn = modal.querySelector("#conflict-btn-reject");
+        acceptBtn?.addEventListener("click", () => this.handleDecision("accept"));
+        rejectBtn?.addEventListener("click", () => this.handleDecision("reject"));
+        const handleKeydown = (e) => {
+          if (e.key === "Escape") {
+            this.handleDecision("reject");
+          } else if (e.key === "Enter" && !e.shiftKey) {
+            this.handleDecision("accept");
+          }
+        };
+        document.addEventListener("keydown", handleKeydown);
+        overlay._keydownHandler = handleKeydown;
+        requestAnimationFrame(() => {
+          overlay.classList.add("visible");
+        });
+      }
+      /**
+       * Render the diff view
+       */
+      renderDiff(info) {
+        if (info.diffRegions.length === 0) {
+          return `
+                <div class="conflict-diff-content" style="padding: 16px; color: ${this.COLORS.textMuted};">
+                    No visible differences (possibly whitespace only)
+                </div>
+            `;
+        }
+        let localHtml = "";
+        let externalHtml = "";
+        for (const region of info.diffRegions) {
+          const maxLines = Math.max(region.localLines.length, region.externalLines.length);
+          for (let i = 0; i < maxLines; i++) {
+            const lineNum = region.startLine + i + 1;
+            const localLine = region.localLines[i];
+            const externalLine = region.externalLines[i];
+            if (localLine !== void 0) {
+              localHtml += `
+                        <div class="conflict-diff-line removed">
+                            <span class="conflict-diff-line-number">${lineNum}</span>
+                            <span class="conflict-diff-line-content">${this.escapeHtml(localLine)}</span>
+                        </div>
+                    `;
+            } else {
+              localHtml += `
+                        <div class="conflict-diff-line">
+                            <span class="conflict-diff-line-number"></span>
+                            <span class="conflict-diff-line-content"></span>
+                        </div>
+                    `;
+            }
+            if (externalLine !== void 0) {
+              externalHtml += `
+                        <div class="conflict-diff-line added">
+                            <span class="conflict-diff-line-number">${lineNum}</span>
+                            <span class="conflict-diff-line-content">${this.escapeHtml(externalLine)}</span>
+                        </div>
+                    `;
+            } else {
+              externalHtml += `
+                        <div class="conflict-diff-line">
+                            <span class="conflict-diff-line-number"></span>
+                            <span class="conflict-diff-line-content"></span>
+                        </div>
+                    `;
+            }
+          }
+        }
+        return `
+            <div class="conflict-diff-header">
+                <div>Your changes (will be lost)</div>
+                <div>Incoming changes</div>
+            </div>
+            <div class="conflict-diff-content">
+                <div class="conflict-diff-side">${localHtml}</div>
+                <div class="conflict-diff-side">${externalHtml}</div>
+            </div>
+        `;
+      }
+      /**
+       * Handle user decision
+       */
+      handleDecision(decision) {
+        if (this.resolvePromise) {
+          this.resolvePromise(decision);
+          this.resolvePromise = null;
+        }
+        this.destroy();
+      }
+      /**
+       * Get a human-readable label for the source
+       */
+      getSourceLabel(source) {
+        switch (source) {
+          case "claude-code":
+            return "Claude";
+          case "git":
+            return "Git";
+          case "external":
+            return "External Editor";
+          default:
+            return "Unknown Source";
+        }
+      }
+      /**
+       * Get an icon for the source
+       */
+      getSourceIcon(source) {
+        switch (source) {
+          case "claude-code":
+            return "\u{1F916}";
+          case "git":
+            return "\u{1F4E6}";
+          case "external":
+            return "\u{1F4DD}";
+          default:
+            return "\u2753";
+        }
+      }
+      /**
+       * Escape HTML special characters
+       */
+      escapeHtml(text) {
+        const div = document.createElement("div");
+        div.textContent = text;
+        return div.innerHTML;
+      }
+      /**
+       * Destroy the modal
+       */
+      destroy() {
+        if (this.modalEl) {
+          const handler = this.modalEl._keydownHandler;
+          if (handler) {
+            document.removeEventListener("keydown", handler);
+          }
+          this.modalEl.remove();
+          this.modalEl = null;
+        }
+        this.currentConflict = null;
+      }
+    };
+    conflictResolutionUI = null;
+    activeAIUsers = /* @__PURE__ */ new Map();
   }
 });
 

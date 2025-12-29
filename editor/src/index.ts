@@ -55,6 +55,9 @@ export {
   ansiStyles,
 } from './execution/ansi';
 
+// Terminal buffer (full cursor movement support)
+export { TerminalBuffer, processTerminalBuffer } from './execution/terminal-buffer';
+
 // IPython integration
 export type { IPythonClient, IPythonExecutorConfig } from './execution/ipython';
 export { IPythonExecutor, createMinimalIPythonClient } from './execution/ipython';

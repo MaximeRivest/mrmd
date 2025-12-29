@@ -394,6 +394,9 @@ export interface CollabFileChangedPayload {
     file_path: string;
     event_type: string;
     mtime?: number | null;
+    /** File content captured immediately when change was detected.
+     *  Use this instead of re-reading from disk to prevent race conditions. */
+    content?: string | null;
 }
 
 export interface CollabDirectoryChangedPayload {

@@ -46,6 +46,25 @@ class FileChangeHandler(FileSystemEventHandler):
         if not event.is_directory:
             self.watcher._queue_event('deleted', event.src_path)
 
+    def on_moved(self, event):
+        """Handle file rename/move events.
+
+        This is critical for editors that use atomic writes (like Claude Code):
+        1. Write to temp file (e.g., file.md.tmp.123)
+        2. Rename temp file to target (file.md.tmp.123 -> file.md)
+
+        The rename triggers on_moved with:
+        - src_path: the temp file path
+        - dest_path: the target file path
+
+        We treat this as a 'modified' event on the destination file.
+        """
+        if not event.is_directory:
+            # Log for debugging
+            print(f'[FileWatcher] on_moved: {event.src_path} -> {event.dest_path}')
+            # Treat as a modification of the destination file
+            self.watcher._queue_event('modified', event.dest_path)
+
 
 class FileWatcher:
     """
@@ -53,16 +72,23 @@ class FileWatcher:
 
     Each client can watch multiple files. When a file changes, all clients
     watching that file are notified via callback.
+
+    IMPORTANT: To prevent race conditions with autosave, file content is captured
+    immediately when watchdog detects a change, before any debouncing. This captured
+    content is passed to the on_change callback so the frontend doesn't need to
+    re-read from disk (which might have been overwritten by autosave).
     """
 
-    def __init__(self, on_change: Callable[[str, str, float, Set[str]], Any],
+    def __init__(self, on_change: Callable[[str, str, float, Set[str], Optional[str]], Any],
                  on_dir_change: Callable[[str, str, str, bool, Set[str]], Any] = None):
         """
         Initialize file watcher.
 
         Args:
             on_change: Async callback called when file changes.
-                       Signature: (path, event_type, mtime, session_ids) -> None
+                       Signature: (path, event_type, mtime, session_ids, captured_content) -> None
+                       captured_content: The file content captured immediately when change was detected,
+                                        or None if capture failed. Use this instead of re-reading from disk.
             on_dir_change: Async callback called when directory contents change.
                            Signature: (dir_path, event_type, changed_path, is_dir, session_ids) -> None
         """
@@ -303,12 +329,30 @@ class FileWatcher:
                 # unwatched dirs are ignored in _process_dir_events
 
     def _queue_event(self, event_type: str, path: str):
-        """Queue a file event for async processing (called from watchdog thread)."""
+        """Queue a file event for async processing (called from watchdog thread).
+
+        IMPORTANT: We capture the file content IMMEDIATELY here, before any debounce,
+        to prevent race conditions where autosave could overwrite external changes
+        before we can detect them.
+        """
         if self._event_queue:
             try:
-                self._event_queue.put_nowait((event_type, path, time.time()))
+                # Capture content immediately to prevent race with autosave
+                captured_content = None
+                capture_error = None
+                if event_type == 'modified':
+                    try:
+                        with open(path, 'r', encoding='utf-8') as f:
+                            captured_content = f.read()
+                    except Exception as e:
+                        capture_error = str(e)
+
+                print(f'[FileWatcher] Queueing {event_type} event: {path} (captured={captured_content is not None}, err={capture_error})')
+                self._event_queue.put_nowait((event_type, path, time.time(), captured_content))
             except asyncio.QueueFull:
-                pass  # Drop event if queue is full
+                print(f'[FileWatcher] Queue full, dropping event: {path}')
+        else:
+            print(f'[FileWatcher] No queue, ignoring event: {path}')
 
     def _queue_dir_event(self, event_type: str, path: str, is_directory: bool):
         """Queue a directory content change event (called from watchdog thread)."""
@@ -322,7 +366,7 @@ class FileWatcher:
         """Process file events from watchdog."""
         while True:
             try:
-                event_type, path, timestamp = await self._event_queue.get()
+                event_type, path, timestamp, captured_content = await self._event_queue.get()
 
                 # Normalize path
                 path = os.path.abspath(path)
@@ -346,9 +390,22 @@ class FileWatcher:
                     except OSError:
                         new_mtime = None
 
-                    # Skip if mtime hasn't actually changed (some editors trigger spurious events)
-                    if new_mtime and watched.mtime and abs(new_mtime - watched.mtime) < 0.01:
+                    # Check if this is a real change
+                    # Old logic: skip if mtime hasn't changed
+                    # New logic: also check if captured content differs from what we'd expect
+                    mtime_unchanged = new_mtime and watched.mtime and abs(new_mtime - watched.mtime) < 0.01
+
+                    if mtime_unchanged and captured_content is None:
+                        # No content captured and mtime unchanged - likely spurious event
+                        print(f'[FileWatcher] Skipping spurious event (mtime unchanged): {path}')
                         continue
+
+                    # If we have captured content, always process (content was captured at event time)
+                    # This handles cases where autosave overwrote the file before mtime check
+                    if captured_content is not None:
+                        print(f'[FileWatcher] Processing event with captured content: {path} (len={len(captured_content)})')
+                    else:
+                        print(f'[FileWatcher] Processing event without captured content: {path}')
 
                     # Update stored mtime
                     if new_mtime:
@@ -357,9 +414,10 @@ class FileWatcher:
                     session_ids = set(watched.watchers)
 
                 # Notify watchers (outside lock)
+                # Pass the captured content so frontend doesn't need to re-read from disk
                 if session_ids and self.on_change:
                     try:
-                        await self.on_change(path, event_type, new_mtime, session_ids)
+                        await self.on_change(path, event_type, new_mtime, session_ids, captured_content)
                     except Exception as e:
                         print(f'[FileWatcher] Error in change callback: {e}')
 

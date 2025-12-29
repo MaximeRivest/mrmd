@@ -157,7 +157,6 @@ export class IPythonExecutor implements Executor {
         // Calculate the new chunk (delta from last accumulated)
         const chunk = accumulated.slice(lastAccumulated.length);
         lastAccumulated = accumulated;
-
         onChunk(chunk, accumulated, done);
       }
     );

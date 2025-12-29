@@ -78,12 +78,23 @@ export class OutputWidget extends WidgetType {
     const lines = output.split('\n');
     const needsCollapse = lines.length > maxLines;
 
-    if (renderAnsi && hasAnsi(output)) {
+    // Check for ANSI codes
+    const hasAnsiCodes = hasAnsi(output);
+
+    // Debug: log what we're receiving
+    console.log('[OutputWidget] content length:', output.length);
+    console.log('[OutputWidget] hasAnsiCodes:', hasAnsiCodes);
+    console.log('[OutputWidget] first 100 chars (JSON):', JSON.stringify(output.slice(0, 100)));
+    console.log('[OutputWidget] charCodes:', Array.from(output.slice(0, 20)).map(c => c.charCodeAt(0)));
+
+    if (renderAnsi && hasAnsiCodes) {
       // Render with ANSI colors
       const visibleOutput = needsCollapse
         ? lines.slice(0, maxLines).join('\n')
         : output;
-      outputEl.innerHTML = ansiToHtml(visibleOutput);
+      const html = ansiToHtml(visibleOutput);
+      console.log('[OutputWidget] ansiToHtml output:', html);
+      outputEl.innerHTML = html;
       outputEl.classList.add('cm-output-ansi');
     } else {
       // Plain text

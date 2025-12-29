@@ -15,7 +15,7 @@ from aiohttp import web, ClientSession, ClientTimeout
 from . import sessions as session_mgmt
 from .sessions import SessionManager
 from .ipython_subprocess import SubprocessIPythonSessionManager
-from .utils import strip_ansi, format_execution_result, handle_progress_output
+from .utils import strip_ansi, format_execution_result, handle_progress_output, accumulate_raw_output
 from . import environment
 from .history import get_history_manager
 from .jobs import get_job_manager, JobStatus, JobType
@@ -2082,10 +2082,12 @@ async def handle_ipython_execute_stream(request: web.Request) -> web.StreamRespo
                 content = msg.get("content", "")
                 stream = msg.get("stream", "stdout")
 
+                # Accumulate RAW output with all escape sequences preserved
+                # The client's TerminalBuffer will handle cursor movement, colors, etc.
                 if stream == "stderr":
-                    accumulated_stderr = handle_progress_output(accumulated_stderr, content)
+                    accumulated_stderr = accumulate_raw_output(accumulated_stderr, content)
                 else:
-                    accumulated_stdout = handle_progress_output(accumulated_stdout, content)
+                    accumulated_stdout = accumulate_raw_output(accumulated_stdout, content)
 
                 combined = accumulated_stdout
                 if accumulated_stderr:
@@ -2093,10 +2095,11 @@ async def handle_ipython_execute_stream(request: web.Request) -> web.StreamRespo
                         combined += '\n'
                     combined += accumulated_stderr
 
+                # Send RAW content and accumulated - client will process escape sequences
                 chunk_data = {
                     "stream": stream,
-                    "content": strip_ansi(content),
-                    "accumulated": combined.strip()
+                    "content": content,  # Raw content with escape sequences
+                    "accumulated": combined  # Raw accumulated with escape sequences
                 }
                 await response.write(f"event: chunk\ndata: {json.dumps(chunk_data)}\n\n".encode())
 

@@ -200,6 +200,7 @@ export class IPythonClient {
     async executeStreaming(code, onChunk, storeHistory = true) {
         return new Promise((resolve, reject) => {
             let finalResult = null;
+            let chunkCount = 0;
 
             const body = {
                 code,
@@ -256,6 +257,7 @@ export class IPythonClient {
                                     const parsed = JSON.parse(eventData);
 
                                     if (eventType === 'chunk') {
+                                        chunkCount++;
                                         // Server provides accumulated output
                                         const accumulated = parsed.accumulated || parsed.content || '';
                                         onChunk(accumulated, false);

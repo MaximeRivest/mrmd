@@ -115,6 +115,12 @@ class SubprocessIPythonSession:
                 "PYTHONUNBUFFERED": "1",
                 "VIRTUAL_ENV": str(venv_root),
                 "PATH": str(venv_bin) + os.pathsep + base_path,
+                # Force ANSI colors in output - libraries check these to enable colors
+                # even when not connected to a TTY (which we're not, since we use pipes)
+                "FORCE_COLOR": "1",  # Used by many libs (chalk, click, rich, etc.)
+                "CLICOLOR_FORCE": "1",  # BSD/macOS convention
+                "TERM": "xterm-256color",  # Helps some libs detect color support
+                "PY_COLORS": "1",  # Python-specific (pytest, etc.)
             }
             # Remove PYTHONHOME if set (can interfere with venv)
             env.pop("PYTHONHOME", None)

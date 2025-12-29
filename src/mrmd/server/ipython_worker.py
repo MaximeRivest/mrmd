@@ -757,38 +757,49 @@ class IPythonWorker:
     def execute_streaming(self, code: str, request_id: str, store_history: bool = True):
         """Execute code with streaming output.
 
-        Uses file descriptor level redirection so that child processes
-        (e.g., vLLM's multiprocessing workers) inherit real file descriptors
-        instead of Python StringIO objects.
+        Uses PTY (pseudo-terminal) for stdout/stderr redirection so that:
+        1. sys.stdout.isatty() returns True - enabling ANSI colors in libraries
+        2. Child processes inherit real file descriptors (important for multiprocessing)
+        3. Libraries like tqdm, Rich, click emit colored output
+
+        Falls back to pipes on systems without PTY support (Windows).
         """
         self._ensure_initialized()
         self._captured_displays = []
 
-        # Create pipes for capturing output at FD level
-        # This allows child processes to inherit real FDs
-        stdout_read_fd, stdout_write_fd = os.pipe()
-        stderr_read_fd, stderr_write_fd = os.pipe()
+        # Try to use PTY for TTY emulation (enables ANSI colors)
+        use_pty = False
+        try:
+            import pty
+            # Create PTY pairs for stdout and stderr
+            stdout_master_fd, stdout_slave_fd = pty.openpty()
+            stderr_master_fd, stderr_slave_fd = pty.openpty()
+            use_pty = True
+        except (ImportError, OSError):
+            # Fall back to pipes on Windows or if PTY fails
+            stdout_master_fd, stdout_slave_fd = os.pipe()
+            stderr_master_fd, stderr_slave_fd = os.pipe()
 
         # Save original FDs (stdout=1, stderr=2)
         saved_stdout_fd = os.dup(1)
         saved_stderr_fd = os.dup(2)
 
-        # Redirect stdout/stderr to our pipes at FD level
-        os.dup2(stdout_write_fd, 1)
-        os.dup2(stderr_write_fd, 2)
+        # Redirect stdout/stderr to PTY slave (or pipe write end)
+        os.dup2(stdout_slave_fd, 1)
+        os.dup2(stderr_slave_fd, 2)
 
-        # Close write ends in parent (we've dup'd them to 1 and 2)
-        os.close(stdout_write_fd)
-        os.close(stderr_write_fd)
+        # Close slave FDs (we've dup'd them to 1 and 2)
+        os.close(stdout_slave_fd)
+        os.close(stderr_slave_fd)
 
-        # Make read ends non-blocking (Unix-only)
+        # Make master FDs non-blocking for reading
         try:
             import fcntl
-            for fd in [stdout_read_fd, stderr_read_fd]:
+            for fd in [stdout_master_fd, stderr_master_fd]:
                 flags = fcntl.fcntl(fd, fcntl.F_GETFL)
                 fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
         except ImportError:
-            pass  # Windows doesn't have fcntl, but also won't run vLLM typically
+            pass  # Windows doesn't have fcntl
 
         # Accumulated output
         accumulated_stdout = []
@@ -796,14 +807,11 @@ class IPythonWorker:
         stop_reader = threading.Event()
 
         def reader_thread():
-            """Read from pipes and stream to parent."""
-            stdout_buffer = b""
-            stderr_buffer = b""
-
+            """Read from PTY masters (or pipes) and stream to parent."""
             while not stop_reader.is_set():
                 # Use select to wait for data
                 try:
-                    readable, _, _ = select.select([stdout_read_fd, stderr_read_fd], [], [], 0.05)
+                    readable, _, _ = select.select([stdout_master_fd, stderr_master_fd], [], [], 0.05)
                 except (ValueError, OSError):
                     break
 
@@ -813,16 +821,14 @@ class IPythonWorker:
                         if not data:
                             continue
 
-                        if fd == stdout_read_fd:
-                            stdout_buffer += data
+                        if fd == stdout_master_fd:
                             stream_name = "stdout"
                             buffer_list = accumulated_stdout
                         else:
-                            stderr_buffer += data
                             stream_name = "stderr"
                             buffer_list = accumulated_stderr
 
-                        # Decode and send
+                        # Decode and send (preserving ANSI escape sequences)
                         try:
                             text = data.decode('utf-8', errors='replace')
                             buffer_list.append(text)
@@ -841,8 +847,8 @@ class IPythonWorker:
 
             # Final read after stop signal
             for fd, stream_name, buffer_list in [
-                (stdout_read_fd, "stdout", accumulated_stdout),
-                (stderr_read_fd, "stderr", accumulated_stderr)
+                (stdout_master_fd, "stdout", accumulated_stdout),
+                (stderr_master_fd, "stderr", accumulated_stderr)
             ]:
                 try:
                     while True:
@@ -865,6 +871,7 @@ class IPythonWorker:
         reader.start()
 
         # Update Python's sys.stdout/stderr to use the new FDs
+        # With PTY, isatty() will return True!
         sys.stdout = io.TextIOWrapper(
             io.FileIO(1, mode='w', closefd=False),
             line_buffering=True
@@ -935,9 +942,9 @@ class IPythonWorker:
             stop_reader.set()
             reader.join(timeout=1.0)
 
-            # Close read ends
-            os.close(stdout_read_fd)
-            os.close(stderr_read_fd)
+            # Close master FDs
+            os.close(stdout_master_fd)
+            os.close(stderr_master_fd)
 
             # Restore Python sys.stdout/stderr
             sys.stdout = io.TextIOWrapper(

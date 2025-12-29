@@ -26,6 +26,26 @@ export interface FileState {
     scrollTop: number;
     undoStack: unknown[];
     redoStack: unknown[];
+    /** Content at last save - used for conflict detection */
+    lastSavedContent?: string;
+    /** Pending external change info (for conflict UI) */
+    pendingExternalChange?: ExternalChangeInfo | null;
+}
+
+/**
+ * Information about an external file change (from Claude Code, git, etc.)
+ */
+export interface ExternalChangeInfo {
+    /** Source of the change */
+    source: 'claude-code' | 'git' | 'external' | 'unknown';
+    /** Timestamp when detected */
+    detectedAt: number;
+    /** New content from disk */
+    newContent: string;
+    /** Whether this conflicts with local changes */
+    hasConflict: boolean;
+    /** Lines changed (approximate, for display) */
+    linesChanged?: number;
 }
 
 export interface SessionState {

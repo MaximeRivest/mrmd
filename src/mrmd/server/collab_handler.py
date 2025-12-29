@@ -287,14 +287,25 @@ class CollabManager:
         file_path: str,
         event_type: str,
         mtime: Optional[float],
-        session_ids: Set[str]
+        session_ids: Set[str],
+        captured_content: Optional[str] = None
     ):
-        """Notify sessions that a file changed on disk (external change)."""
+        """Notify sessions that a file changed on disk (external change).
+
+        Args:
+            file_path: The file path that changed
+            event_type: 'modified', 'created', or 'deleted'
+            mtime: The file's modification time
+            session_ids: Set of session IDs to notify
+            captured_content: File content captured immediately when change was detected.
+                             Included in the message so frontend doesn't need to re-read.
+        """
         message = {
             'type': 'file_changed',
             'file_path': file_path,
             'event_type': event_type,  # 'modified', 'created', 'deleted'
-            'mtime': mtime
+            'mtime': mtime,
+            'content': captured_content  # Include content to prevent race with autosave
         }
         msg_str = json.dumps(message)
 
@@ -339,12 +350,21 @@ _collab_manager = CollabManager()
 
 # ==================== File Watcher Integration ====================
 
-async def _on_file_change(path: str, event_type: str, mtime: Optional[float], session_ids: Set[str]):
+async def _on_file_change(path: str, event_type: str, mtime: Optional[float], session_ids: Set[str], captured_content: Optional[str] = None):
     """Callback from file watcher when a file changes.
 
     For external file modifications, we update the Yjs document so all clients
     get the changes via the normal Yjs sync protocol. This is cleaner than
     sending a separate 'file_changed' message.
+
+    Args:
+        path: The file path that changed
+        event_type: 'modified', 'created', or 'deleted'
+        mtime: The file's modification time
+        session_ids: Set of session IDs watching this file
+        captured_content: File content captured immediately when change was detected.
+                         Use this instead of re-reading from disk to avoid race conditions
+                         where autosave might have overwritten the external changes.
     """
     manager = get_collab_manager()
     yjs = get_yjs_manager()
@@ -352,11 +372,19 @@ async def _on_file_change(path: str, event_type: str, mtime: Optional[float], se
     if event_type == 'modified' and yjs and yjs.has_document(path):
         # File was modified externally - update Yjs document
         try:
-            import os
-            if os.path.exists(path):
-                with open(path, 'r', encoding='utf-8') as f:
-                    new_content = f.read()
+            # Use captured content if available (prevents race with autosave)
+            if captured_content is not None:
+                new_content = captured_content
+            else:
+                # Fall back to reading from disk
+                import os
+                if os.path.exists(path):
+                    with open(path, 'r', encoding='utf-8') as f:
+                        new_content = f.read()
+                else:
+                    new_content = None
 
+            if new_content is not None:
                 # Update Yjs document - this will broadcast to all clients
                 await yjs.set_content(path, new_content, 'file_watcher')
                 print(f'[Collab] External file change applied to Yjs: {path}')
@@ -365,7 +393,8 @@ async def _on_file_change(path: str, event_type: str, mtime: Optional[float], se
             print(f'[Collab] Failed to apply external file change to Yjs: {e}')
 
     # Fall back to notification for non-Yjs cases or errors
-    await manager.notify_file_changed(path, event_type, mtime, session_ids)
+    # Include captured content so frontend doesn't need to re-read from disk
+    await manager.notify_file_changed(path, event_type, mtime, session_ids, captured_content)
 
 
 async def _on_dir_change(dir_path: str, event_type: str, changed_path: str, is_dir: bool, session_ids: Set[str]):

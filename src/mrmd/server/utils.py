@@ -280,3 +280,23 @@ def handle_progress_output(current_output: str, new_chunk: str) -> str:
             return update
     else:
         return current_output + clean_chunk
+
+
+def accumulate_raw_output(current_output: str, new_chunk: str) -> str:
+    """
+    Accumulate raw terminal output for streaming to client.
+
+    Unlike handle_progress_output(), this preserves ALL escape sequences
+    including cursor movement (ESC[A/B/C/D), colors (ESC[...m), and
+    other terminal commands. The client's TerminalBuffer handles rendering.
+
+    Args:
+        current_output: Accumulated raw output so far
+        new_chunk: New chunk of raw terminal output
+
+    Returns:
+        Accumulated raw output with all escape sequences preserved
+    """
+    if not new_chunk:
+        return current_output
+    return current_output + new_chunk

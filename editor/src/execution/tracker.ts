@@ -4,7 +4,7 @@ import { clearCellScripts } from '../widgets/html/script-manager';
 import { serializeCellOptions } from '../cells/options';
 import type { CellOptions } from '../cells/types';
 import { ExecutionQueue, type QueuedExecution } from './queue';
-import { processTerminalOutput, hasAnsi } from './ansi';
+import { TerminalBuffer } from './terminal-buffer';
 
 /**
  * Callbacks for file-aware execution (optional)
@@ -48,6 +48,11 @@ export class ExecutionTracker {
   private writeThrottleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private pendingWrites = new Map<string, string>();
   private writeThrottleMs = 100; // Throttle writes to avoid performance issues
+
+  // Persistent terminal buffers for proper cursor movement handling across chunks
+  // Each execution gets its own buffer that accumulates output correctly
+  private terminalBuffers = new Map<string, TerminalBuffer>();
+  private lastAccumulatedLengths = new Map<string, number>();
 
   constructor(view: EditorView, executor: Executor) {
     this.view = view;
@@ -159,11 +164,57 @@ export class ExecutionTracker {
     let errorMsg: string | undefined;
 
     try {
-      // Stream execution
+      // Stream execution with persistent terminal buffer for proper cursor handling
+      let chunkCount = 0;
       await this.executor.executeStreaming(code, language, (chunk, accumulated, done) => {
         if (controller.signal.aborted) return;
-        // Keep ANSI codes for rendering, only process carriage returns
-        this.replaceOutputContent(execId, processTerminalOutput(accumulated));
+        chunkCount++;
+
+        // Get or create persistent buffer for this execution
+        let buffer = this.terminalBuffers.get(execId);
+        if (!buffer) {
+          buffer = new TerminalBuffer();
+          buffer.debug = false; // Disable verbose logging
+          this.terminalBuffers.set(execId, buffer);
+          this.lastAccumulatedLengths.set(execId, 0);
+        }
+
+        // IMPORTANT: On 'done', the server sends 'formatted_output' which is RAW stdout
+        // containing ALL intermediate frames without cursor processing. We must IGNORE it
+        // and use our buffer's current state instead.
+        if (done) {
+          // Don't process the done chunk - our buffer already has the correct final state
+          // Just do a final write with current buffer content
+          const displayContent = buffer.toString();
+          this.replaceOutputContent(execId, displayContent);
+          return;
+        }
+
+        // The server's 'accumulated' field is actually per-line output, not true accumulated.
+        // We detect this by checking if accumulated.length < lastLen (went backwards).
+        // When this happens, treat 'accumulated' as the new chunk content directly.
+        const lastLen = this.lastAccumulatedLengths.get(execId) || 0;
+
+        let newContent: string;
+        if (accumulated.length < lastLen) {
+          // Server sent a new "frame" - accumulated went backwards
+          // This means 'accumulated' is actually just this chunk's content
+          newContent = accumulated;
+        } else {
+          // Normal case - calculate delta
+          newContent = accumulated.slice(lastLen);
+        }
+
+        this.lastAccumulatedLengths.set(execId, accumulated.length);
+
+        // Write new content to the persistent buffer
+        if (newContent) {
+          buffer.write(newContent);
+        }
+
+        // Get current display state and update output
+        const displayContent = buffer.toString();
+        this.replaceOutputContent(execId, displayContent);
       });
     } catch (error) {
       success = false;
@@ -181,6 +232,10 @@ export class ExecutionTracker {
 
       // Clear status from output block
       this.clearOutputStatus(execId);
+
+      // Clean up terminal buffer
+      this.terminalBuffers.delete(execId);
+      this.lastAccumulatedLengths.delete(execId);
 
       this.running.delete(execId);
 
@@ -219,9 +274,31 @@ export class ExecutionTracker {
     this.insertOutputBlock(codeBlockEnd, execId);
 
     try {
+      // Stream execution with persistent terminal buffer for proper cursor handling
       await this.executor.executeStreaming(code, language, (chunk, accumulated, done) => {
         if (controller.signal.aborted) return;
-        this.replaceOutputContent(execId, processTerminalOutput(accumulated));
+
+        // Get or create persistent buffer for this execution
+        let buffer = this.terminalBuffers.get(execId);
+        if (!buffer) {
+          buffer = new TerminalBuffer();
+          this.terminalBuffers.set(execId, buffer);
+          this.lastAccumulatedLengths.set(execId, 0);
+        }
+
+        // Calculate the actual new content (delta from what we've already processed)
+        const lastLen = this.lastAccumulatedLengths.get(execId) || 0;
+        const newContent = accumulated.slice(lastLen);
+        this.lastAccumulatedLengths.set(execId, accumulated.length);
+
+        // Write new content to the persistent buffer
+        if (newContent) {
+          buffer.write(newContent);
+        }
+
+        // Get current display state (with cursor movements resolved, colors preserved)
+        const displayContent = buffer.toString();
+        this.replaceOutputContent(execId, displayContent);
       });
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -231,6 +308,11 @@ export class ExecutionTracker {
     } finally {
       this.ensureOutputNewline(execId);
       requestAnimationFrame(() => this.ensureOutputNewline(execId));
+
+      // Clean up terminal buffer
+      this.terminalBuffers.delete(execId);
+      this.lastAccumulatedLengths.delete(execId);
+
       this.running.delete(execId);
 
       document.dispatchEvent(new CustomEvent('mrmd:execution-complete', {
@@ -305,6 +387,9 @@ export class ExecutionTracker {
     if (execution) {
       execution.controller.abort();
       this.running.delete(execId);
+      // Clean up terminal buffer
+      this.terminalBuffers.delete(execId);
+      this.lastAccumulatedLengths.delete(execId);
     }
   }
 
@@ -316,6 +401,9 @@ export class ExecutionTracker {
       controller.abort();
     }
     this.running.clear();
+    // Clean up all terminal buffers
+    this.terminalBuffers.clear();
+    this.lastAccumulatedLengths.clear();
   }
 
   /**

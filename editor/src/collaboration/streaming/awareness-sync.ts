@@ -42,6 +42,8 @@ export interface AwarenessState {
     id: string;
     name: string;
     color: string;
+    /** User type: 'human' for regular users, 'ai' for Claude Code or AI assistants */
+    type?: 'human' | 'ai';
   };
 
   // Cursor position (undefined = not set)
@@ -127,6 +129,8 @@ export interface AwarenessSyncConfig {
   userId: string;
   userName: string;
   userColor: string;
+  /** User type: 'human' for regular users, 'ai' for Claude Code or AI assistants */
+  userType?: 'human' | 'ai';
   role?: 'presenter' | 'viewer' | 'collaborator';
 }
 
@@ -152,6 +156,7 @@ export class AwarenessSyncManager {
         id: config.userId,
         name: config.userName,
         color: config.userColor,
+        type: config.userType || 'human',
       },
       role: config.role || 'collaborator',
       locks: [],

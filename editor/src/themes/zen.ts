@@ -26,6 +26,24 @@ export const zenThemeStyles = `
     --selection: rgba(45, 170, 219, 0.2);
     --code-bg: rgba(0, 0, 0, 0.04);
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+
+    /* Light mode ANSI colors */
+    --ansi-black: #000;
+    --ansi-red: #c91b00;
+    --ansi-green: #00a600;
+    --ansi-yellow: #a68a00;
+    --ansi-blue: #0451a5;
+    --ansi-magenta: #bc05bc;
+    --ansi-cyan: #0598bc;
+    --ansi-white: #555;
+    --ansi-bright-black: #666;
+    --ansi-bright-red: #e74c3c;
+    --ansi-bright-green: #27ae60;
+    --ansi-bright-yellow: #f39c12;
+    --ansi-bright-blue: #3498db;
+    --ansi-bright-magenta: #9b59b6;
+    --ansi-bright-cyan: #1abc9c;
+    --ansi-bright-white: #333;
   }
 
   @media (prefers-color-scheme: dark) {

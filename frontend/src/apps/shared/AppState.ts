@@ -12,6 +12,7 @@ import type {
     UIState,
     AppStateSnapshot,
     EnvironmentInfo,
+    ExternalChangeInfo,
 } from './types';
 
 type Unsubscribe = () => void;
@@ -115,6 +116,9 @@ export class AppState {
             scrollTop: 0,
             undoStack: [],
             redoStack: [],
+            // Track last saved content for conflict detection
+            lastSavedContent: content,
+            pendingExternalChange: null,
             ...options,
         };
 
@@ -163,6 +167,10 @@ export class AppState {
         const file = this._openFiles.get(path);
         if (file) {
             file.modified = false;
+            // Store the saved content for conflict detection
+            file.lastSavedContent = file.content;
+            // Clear any pending external change since we just saved
+            file.pendingExternalChange = null;
             if (mtime !== undefined) {
                 file.mtime = mtime;
             }
@@ -227,6 +235,65 @@ export class AppState {
             }
 
             this._notifyFileChange(file, newPath);
+        }
+    }
+
+    // ========================================================================
+    // External Change Tracking
+    // ========================================================================
+
+    /**
+     * Record a pending external change for a file.
+     * This is used when an external change is detected but may need conflict resolution.
+     */
+    setPendingExternalChange(path: string, change: ExternalChangeInfo | null): void {
+        const file = this._openFiles.get(path);
+        if (file) {
+            file.pendingExternalChange = change;
+            this._notifyFileChange(file, path);
+        }
+    }
+
+    /**
+     * Get pending external change for a file (if any)
+     */
+    getPendingExternalChange(path: string): ExternalChangeInfo | null {
+        const file = this._openFiles.get(path);
+        return file?.pendingExternalChange ?? null;
+    }
+
+    /**
+     * Check if a file has local changes that would conflict with external changes.
+     * Compares current content with lastSavedContent.
+     */
+    hasLocalChanges(path: string): boolean {
+        const file = this._openFiles.get(path);
+        if (!file) return false;
+
+        // If modified flag is set, there are definitely local changes
+        if (file.modified) return true;
+
+        // Also check if content differs from last saved (for edge cases)
+        if (file.lastSavedContent !== undefined && file.content !== file.lastSavedContent) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Apply an external change to a file's stored content.
+     * Called after the editor has been updated.
+     */
+    applyExternalChange(path: string, newContent: string, newMtime: number | null): void {
+        const file = this._openFiles.get(path);
+        if (file) {
+            file.content = newContent;
+            file.lastSavedContent = newContent;
+            file.mtime = newMtime;
+            file.modified = false;
+            file.pendingExternalChange = null;
+            this._notifyFileChange(file, path);
         }
     }
 

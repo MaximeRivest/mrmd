@@ -30,6 +30,8 @@ export interface RemoteCursor {
   sessionId: string;
   /** User display name */
   userName: string;
+  /** User type: 'human' for regular users, 'ai' for Claude Code or AI assistants */
+  userType?: 'human' | 'ai';
   /** User color (hex) */
   color: string;
   /** Cursor position (character offset in document) */

@@ -309,21 +309,24 @@ export function hasAnsi(text: string): boolean {
 /**
  * Convert ANSI escape sequences to HTML with styled spans
  *
- * @param text - Text with ANSI escape sequences
+ * @param text - Text with ANSI escape sequences (already processed for cursor movement)
  * @returns HTML string with styled spans
  */
 export function ansiToHtml(text: string): string {
-  // First, process terminal output (handle \r for progress bars)
-  const processed = processTerminalOutput(text);
+  // Note: cursor movement should be handled before this by processTerminalBuffer
+  // This function only handles SGR codes (colors/styles)
 
   // Pattern to match ANSI SGR sequences: \x1b[<codes>m
   const ansiPattern = /\x1b\[([0-9;]*)m/g;
 
   // Pattern to match other escape sequences (to strip them)
-  const otherEscapes = /\x1b(?:\[[0-9;]*[A-HJKSTfn]|\][^\x07]*(?:\x07|\x1b\\)|.)/g;
+  // These should already be resolved by terminal buffer, but strip any remaining
+  // IMPORTANT: Don't match \x1b[ followed by SGR codes (m) - those are handled by ansiPattern
+  // The [^\[] at the end matches ESC + any char EXCEPT '[' to avoid stripping CSI sequences
+  const otherEscapes = /\x1b(?:\[[0-9;]*[A-HJKSTfn]|\][^\x07]*(?:\x07|\x1b\\)|[^\[])/g;
 
-  // Strip non-SGR escape sequences
-  const cleaned = processed.replace(otherEscapes, '');
+  // Strip non-SGR escape sequences (cursor movement etc.)
+  const cleaned = text.replace(otherEscapes, '');
 
   const state = createStyleState();
   const output: string[] = [];

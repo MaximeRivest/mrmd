@@ -67,32 +67,47 @@ const remoteCursorsField = StateField.define<Map<string, RemoteCursor>>({
 
 /**
  * Widget for remote cursor caret
+ * Renders differently for AI users (Claude Code) vs human users
  */
 class CursorWidget extends WidgetType {
   constructor(
     readonly color: string,
-    readonly userName: string
+    readonly userName: string,
+    readonly userType: 'human' | 'ai' = 'human'
   ) {
     super();
   }
 
   eq(other: CursorWidget): boolean {
-    return other.color === this.color && other.userName === this.userName;
+    return other.color === this.color &&
+           other.userName === this.userName &&
+           other.userType === this.userType;
   }
 
   toDOM(): HTMLElement {
+    const isAI = this.userType === 'ai';
     const cursor = document.createElement('span');
-    cursor.className = 'cm-remote-cursor';
+    cursor.className = `cm-remote-cursor${isAI ? ' cm-remote-cursor-ai' : ''}`;
+
+    // AI cursors get a slightly different appearance - pulsing glow
+    const borderStyle = isAI
+      ? `border-left: 2px solid ${this.color}; box-shadow: 0 0 4px ${this.color};`
+      : `border-left: 2px solid ${this.color};`;
+
     cursor.style.cssText = `
-      border-left: 2px solid ${this.color};
+      ${borderStyle}
       margin-left: -1px;
       position: relative;
     `;
 
     // Name label that appears above cursor
     const label = document.createElement('span');
-    label.className = 'cm-remote-cursor-label';
-    label.textContent = this.userName;
+    label.className = `cm-remote-cursor-label${isAI ? ' cm-remote-cursor-label-ai' : ''}`;
+
+    // AI users get a robot icon prefix
+    const displayName = isAI ? `🤖 ${this.userName}` : this.userName;
+    label.textContent = displayName;
+
     label.style.cssText = `
       position: absolute;
       bottom: 100%;
@@ -106,6 +121,7 @@ class CursorWidget extends WidgetType {
       pointer-events: none;
       opacity: 0;
       transition: opacity 0.15s;
+      ${isAI ? 'font-weight: 500;' : ''}
     `;
 
     cursor.appendChild(label);
@@ -119,11 +135,13 @@ class CursorWidget extends WidgetType {
     });
 
     // Brief flash of label when cursor moves
+    // AI cursors show label for longer (2.5s vs 1.5s)
+    const labelDuration = isAI ? 2500 : 1500;
     setTimeout(() => {
       label.style.opacity = '1';
       setTimeout(() => {
         label.style.opacity = '0';
-      }, 1500);
+      }, labelDuration);
     }, 0);
 
     return cursor;
@@ -175,7 +193,7 @@ const remoteCursorsPlugin = ViewPlugin.fromClass(
           from: offset,
           to: offset,
           decoration: Decoration.widget({
-            widget: new CursorWidget(cursor.color, cursor.userName),
+            widget: new CursorWidget(cursor.color, cursor.userName, cursor.userType || 'human'),
             side: 1,
           }),
         });
@@ -226,6 +244,10 @@ const presenceStyles = EditorView.baseTheme({
     borderLeft: '2px solid',
     marginLeft: '-1px',
   },
+  '.cm-remote-cursor-ai': {
+    // AI cursors have a subtle pulsing animation
+    animation: 'cm-ai-cursor-pulse 2s ease-in-out infinite',
+  },
   '.cm-remote-cursor-label': {
     position: 'absolute',
     bottom: '100%',
@@ -237,10 +259,32 @@ const presenceStyles = EditorView.baseTheme({
     whiteSpace: 'nowrap',
     pointerEvents: 'none',
   },
+  '.cm-remote-cursor-label-ai': {
+    // AI labels have slightly different styling
+    fontWeight: '500',
+  },
   '.cm-remote-selection': {
     // Background color set inline based on user color
   },
+  // Keyframes for AI cursor pulsing (defined via style injection below)
 });
+
+// Inject keyframes animation for AI cursor pulse
+// (EditorView.baseTheme doesn't support @keyframes)
+if (typeof document !== 'undefined') {
+  const styleId = 'cm-ai-cursor-animation';
+  if (!document.getElementById(styleId)) {
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `
+      @keyframes cm-ai-cursor-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.6; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+}
 
 /**
  * Create presence extension that shows remote cursors

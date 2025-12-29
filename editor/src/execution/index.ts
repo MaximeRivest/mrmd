@@ -28,6 +28,9 @@ export {
   ansiStyles,
 } from './ansi';
 
+// Terminal buffer (full cursor movement support)
+export { TerminalBuffer, processTerminalBuffer } from './terminal-buffer';
+
 // IPython integration
 export type {
   IPythonClient,
