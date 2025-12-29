@@ -20,12 +20,14 @@ import {
   CellStatusWidget,
   getCellState,
   OutputWidget,
+  ImageOutputWidget,
+  parseImageMarkdown,
 } from '../widgets';
 import { parseCellOptions, parseRenderedOptions } from '../cells/options';
 import { DEFAULT_CELL_OPTIONS } from '../cells/types';
 import type { ExecutionTracker } from '../execution/tracker';
 import type { ExecutionQueue } from '../execution/queue';
-import { isOutputBlock, isHtmlRenderedBlock, extractLanguage } from '../core/code-blocks';
+import { isOutputBlock, isHtmlRenderedBlock, isImageOutputBlock, extractLanguage } from '../core/code-blocks';
 
 interface DecorationItem {
   from: number;
@@ -280,6 +282,7 @@ export function markdownDecorations(
               const lang = extractLanguage(firstLineText);
               const isOutput = isOutputBlock(firstLineText);
               const isHtmlRendered = isHtmlRenderedBlock(firstLineText);
+              const isImageOutput = isImageOutputBlock(firstLineText);
 
               // Handle output blocks with ANSI rendering
               if (isOutput) {
@@ -341,6 +344,81 @@ export function markdownDecorations(
                     });
                   }
                 }
+              } else if (isImageOutput) {
+                // Handle image-output blocks (matplotlib figures, etc.)
+                // Extract exec ID from fence (e.g., "image-output:exec-123" -> "exec-123")
+                const execIdMatch = firstLineText.match(/image-output:([^\s{]+)/);
+                const execId = execIdMatch ? execIdMatch[1] : `image-output-${node.from}`;
+
+                // Check if cursor is inside the block (allows editing when focused)
+                const cursorInBlock = cursorLine >= startLine.number && cursorLine <= endLine.number;
+
+                // Check if there's content (more than just the fences)
+                const hasContentLines = endLine.number > startLine.number + 1;
+
+                if (hasContentLines && !cursorInBlock) {
+                  // Cursor NOT in block: hide content lines and show rendered image widget
+                  // Add line decoration for opening fence
+                  items.push({
+                    from: startLine.from,
+                    type: 'line',
+                    class: 'cm-md-image-output-block-line',
+                  });
+
+                  // Hide content lines (between fences) with CSS
+                  for (let i = startLine.number + 1; i < endLine.number; i++) {
+                    const line = view.state.doc.line(i);
+                    items.push({
+                      from: line.from,
+                      type: 'line',
+                      class: 'cm-md-image-output-content-hidden',
+                    });
+                  }
+
+                  // Add line decoration for closing fence
+                  items.push({
+                    from: endLine.from,
+                    type: 'line',
+                    class: 'cm-md-image-output-block-line',
+                  });
+
+                  // Extract content for the widget (lines between fences)
+                  const contentStart = startLine.to + 1;
+                  const contentEnd = endLine.from;
+                  const content = view.state.sliceDoc(contentStart, contentEnd).trim();
+
+                  // Parse markdown image syntax: ![alt](url)
+                  const imageInfo = parseImageMarkdown(content);
+
+                  if (imageInfo) {
+                    // Resolve URL if resolver provided
+                    const resolvedSrc = resolveImageUrl
+                      ? resolveImageUrl(imageInfo.src)
+                      : imageInfo.src;
+
+                    // Add ImageOutputWidget after opening fence line
+                    items.push({
+                      from: startLine.to,
+                      type: 'widget',
+                      widget: new ImageOutputWidget(
+                        resolvedSrc,
+                        imageInfo.alt,
+                        execId,
+                        { resolveUrl: resolveImageUrl }
+                      ),
+                    });
+                  }
+                } else {
+                  // Cursor IN block or no content: show raw text for editing
+                  for (let i = startLine.number; i <= endLine.number; i++) {
+                    const line = view.state.doc.line(i);
+                    items.push({
+                      from: line.from,
+                      type: 'line',
+                      class: 'cm-md-image-output-block-line',
+                    });
+                  }
+                }
               } else {
                 // Non-output code blocks: add line decorations
                 for (let i = startLine.number; i <= endLine.number; i++) {
@@ -356,7 +434,7 @@ export function markdownDecorations(
               }
 
               // Add run button or status widget for executable code blocks
-              if (!isOutput && lang && !['text', 'markdown', 'md', 'output'].includes(lang)) {
+              if (!isOutput && !isImageOutput && lang && !['text', 'markdown', 'md', 'output'].includes(lang)) {
                 // For HTML blocks, pass the parsed options
                 const cellOptions =
                   lang === 'html' ? parseCellOptions(firstLineText).options : undefined;

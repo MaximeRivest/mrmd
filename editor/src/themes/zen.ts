@@ -763,6 +763,71 @@ export const zenEditorTheme = EditorView.theme({
     borderRadius: '4px',
     fontSize: '0.8em',
   },
+
+  // ============================================================================
+  // Image Output Widget Styles
+  // ============================================================================
+  '.cm-image-output-widget': {
+    display: 'block',
+    margin: '8px 0',
+    position: 'relative',
+  },
+  '.cm-image-output-wrapper': {
+    display: 'block',
+    background: 'var(--surface)',
+    borderRadius: '6px',
+    padding: '12px',
+    textAlign: 'center',
+    overflow: 'hidden',
+  },
+  '.cm-image-output-wrapper.cm-image-output-loading': {
+    color: 'var(--text-muted)',
+    fontSize: '0.9em',
+    minHeight: '100px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  '.cm-image-output-wrapper.cm-image-output-error': {
+    color: 'var(--text-muted)',
+    fontSize: '0.9em',
+    padding: '1.5em',
+    background: 'rgba(239, 68, 68, 0.1)',
+    border: '1px solid rgba(239, 68, 68, 0.2)',
+  },
+  '.cm-image-output-img': {
+    maxWidth: '100%',
+    height: 'auto',
+    borderRadius: '4px',
+    display: 'block',
+    margin: '0 auto',
+    boxShadow: 'var(--shadow)',
+  },
+  // Line decorations for image-output blocks
+  '.cm-md-image-output-block-line': {
+    position: 'relative',
+    fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace !important",
+    fontSize: '0.85em',
+    lineHeight: '1.5',
+    color: 'var(--text-muted)',
+  },
+  '.cm-md-image-output-block-line::before': {
+    content: '""',
+    position: 'absolute',
+    left: '-32px',
+    right: '-32px',
+    top: '0',
+    bottom: '0',
+    background: 'var(--surface)',
+    borderLeft: '2px solid var(--accent)',
+    zIndex: '-1',
+    pointerEvents: 'none',
+  },
+  '.cm-md-image-output-content-hidden': {
+    display: 'none !important',
+    height: '0 !important',
+    overflow: 'hidden !important',
+  },
 });
 
 /**

@@ -46,6 +46,14 @@ export function isHtmlRenderedBlock(fenceLine: string): boolean {
 }
 
 /**
+ * Check if a fence line represents an image-output block (supports 3+ backticks)
+ */
+export function isImageOutputBlock(fenceLine: string): boolean {
+  // Match: ```image-output, ````image-output, ```image-output:exec-id, etc.
+  return /^`{3,}image-output(?::|$|\s)/i.test(fenceLine);
+}
+
+/**
  * Extract language from a fence line (supports 3+ backticks)
  */
 export function extractLanguage(fenceLine: string): string {
@@ -72,11 +80,12 @@ export function getCodeBlocksFromAST(state: EditorState): CodeBlockInfo[] {
         // Extract language from the opening fence (supports 3+ backticks)
         const lang = extractLanguage(firstLineText);
 
-        // Skip output, html-rendered, and non-executable blocks
+        // Skip output, html-rendered, image-output, and non-executable blocks
         const isOutput = isOutputBlock(firstLineText);
         const isHtmlRendered = isHtmlRenderedBlock(firstLineText);
+        const isImageOutput = isImageOutputBlock(firstLineText);
 
-        if (isOutput || isHtmlRendered) {
+        if (isOutput || isHtmlRendered || isImageOutput) {
           return;
         }
 

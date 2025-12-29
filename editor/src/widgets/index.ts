@@ -25,3 +25,10 @@ export {
   cellStatusStyles,
   type CellState,
 } from './cell-status';
+export {
+  ImageOutputWidget,
+  parseImageMarkdown,
+  createImageMarkdown,
+  createImageOutputWidget,
+  type ImageOutputWidgetConfig,
+} from './image-output';

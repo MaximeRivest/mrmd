@@ -5,6 +5,7 @@ import { serializeCellOptions } from '../cells/options';
 import type { CellOptions } from '../cells/types';
 import { ExecutionQueue, type QueuedExecution } from './queue';
 import { TerminalBuffer } from './terminal-buffer';
+import { createImageMarkdown } from '../widgets/image-output';
 
 /**
  * Callbacks for file-aware execution (optional)
@@ -162,11 +163,12 @@ export class ExecutionTracker {
 
     let success = true;
     let errorMsg: string | undefined;
+    let executionResult: import('./executor').ExecutionResult | null = null;
 
     try {
       // Stream execution with persistent terminal buffer for proper cursor handling
       let chunkCount = 0;
-      await this.executor.executeStreaming(code, language, (chunk, accumulated, done) => {
+      executionResult = await this.executor.executeStreaming(code, language, (chunk, accumulated, done) => {
         if (controller.signal.aborted) return;
         chunkCount++;
 
@@ -233,6 +235,21 @@ export class ExecutionTracker {
       // Clear status from output block
       this.clearOutputStatus(execId);
 
+      // Create image-output blocks for saved image assets
+      if (executionResult?.savedAssets) {
+        let imageIndex = 0;
+        for (const asset of executionResult.savedAssets) {
+          if (asset.assetType === 'image' || asset.mimeType.startsWith('image/')) {
+            imageIndex++;
+            const altText = `Figure ${imageIndex}`;
+            // Use a slight delay to ensure the output block is fully written
+            requestAnimationFrame(() => {
+              this.insertImageOutputBlock(codeBlockEnd, execId, asset.path, altText);
+            });
+          }
+        }
+      }
+
       // Clean up terminal buffer
       this.terminalBuffers.delete(execId);
       this.lastAccumulatedLengths.delete(execId);
@@ -272,10 +289,11 @@ export class ExecutionTracker {
     }));
 
     this.insertOutputBlock(codeBlockEnd, execId);
+    let executionResult: import('./executor').ExecutionResult | null = null;
 
     try {
       // Stream execution with persistent terminal buffer for proper cursor handling
-      await this.executor.executeStreaming(code, language, (chunk, accumulated, done) => {
+      executionResult = await this.executor.executeStreaming(code, language, (chunk, accumulated, done) => {
         if (controller.signal.aborted) return;
 
         // Get or create persistent buffer for this execution
@@ -308,6 +326,20 @@ export class ExecutionTracker {
     } finally {
       this.ensureOutputNewline(execId);
       requestAnimationFrame(() => this.ensureOutputNewline(execId));
+
+      // Create image-output blocks for saved image assets
+      if (executionResult?.savedAssets) {
+        let imageIndex = 0;
+        for (const asset of executionResult.savedAssets) {
+          if (asset.assetType === 'image' || asset.mimeType.startsWith('image/')) {
+            imageIndex++;
+            const altText = `Figure ${imageIndex}`;
+            requestAnimationFrame(() => {
+              this.insertImageOutputBlock(codeBlockEnd, execId, asset.path, altText);
+            });
+          }
+        }
+      }
 
       // Clean up terminal buffer
       this.terminalBuffers.delete(execId);
@@ -458,6 +490,58 @@ export class ExecutionTracker {
     this.dispatchChange({
       from: codeBlockEnd,
       insert: `\n\`\`\`output:${execId}\n${statusLine}\`\`\``,
+    });
+  }
+
+  /**
+   * Insert an image-output block after the output block
+   * Used for matplotlib figures and other image outputs
+   * @param afterPos Position to insert after (typically end of output block)
+   * @param execId Execution ID for linking
+   * @param imagePath Path to the image file
+   * @param alt Alt text for the image
+   */
+  insertImageOutputBlock(afterPos: number, execId: string, imagePath: string, alt: string = 'output'): void {
+    const imageMarkdown = createImageMarkdown(imagePath, alt);
+    const state = this.view.state;
+
+    // Find the position after the output block (after its closing ```)
+    // We need to insert after any existing output block for this execId
+    const doc = state.doc.toString();
+    const outputMarker = `\`\`\`output:${execId}`;
+    const outputPos = doc.indexOf(outputMarker);
+
+    let insertPos = afterPos;
+
+    if (outputPos !== -1) {
+      // Find the closing ``` of the output block
+      const afterOutput = doc.slice(outputPos);
+      const closeMatch = afterOutput.match(/```[\s\S]*?```/);
+      if (closeMatch) {
+        insertPos = outputPos + closeMatch[0].length;
+      }
+    }
+
+    // Check if there's already an image-output block for this execId
+    const existingImageOutput = doc.indexOf(`\`\`\`image-output:${execId}`);
+    if (existingImageOutput !== -1) {
+      // Replace existing image-output block
+      const restOfDoc = doc.slice(existingImageOutput);
+      const blockMatch = restOfDoc.match(/^```image-output:[^\n]*\n[\s\S]*?```/);
+      if (blockMatch) {
+        this.dispatchChange({
+          from: existingImageOutput,
+          to: existingImageOutput + blockMatch[0].length,
+          insert: `\`\`\`image-output:${execId}\n${imageMarkdown}\n\`\`\``,
+        });
+        return;
+      }
+    }
+
+    // Insert new image-output block
+    this.dispatchChange({
+      from: insertPos,
+      insert: `\n\`\`\`image-output:${execId}\n${imageMarkdown}\n\`\`\``,
     });
   }
 
