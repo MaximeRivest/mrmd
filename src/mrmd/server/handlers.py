@@ -124,6 +124,9 @@ def setup_http_routes(app: web.Application, ai_port: int = 51790):
     app.router.add_get("/api/file/relative/{path:.*}", handle_file_relative)
     app.router.add_get("/api/file/relative", handle_file_relative)  # Query param version
 
+    # Asset cleanup
+    app.router.add_post("/api/assets/cleanup", handle_assets_cleanup)
+
     # Project detection
     app.router.add_post("/api/project/detect", handle_project_detect)
 
@@ -627,6 +630,9 @@ async def handle_file_write(request: web.Request) -> web.Response:
         message?: string (for version tracking),
         track_version?: boolean (default true if in project)
     }
+
+    SAFETY: Refuses to write empty content to a non-empty file to prevent
+    data loss from sync issues.
     """
     try:
         data = await request.json()
@@ -640,6 +646,28 @@ async def handle_file_write(request: web.Request) -> web.Response:
             return web.json_response({"error": "content required"}, status=400)
 
         path = Path(file_path).resolve()
+
+        # CRITICAL SAFETY CHECK: Never write empty content to non-empty file
+        # This prevents data loss from sync issues or frontend bugs
+        if len(content) == 0 and path.exists() and path.is_file():
+            try:
+                disk_size = path.stat().st_size
+                if disk_size > 0:
+                    print(f'[FileWrite] BLOCKED: Refusing to write empty content to non-empty file: {path} (disk size: {disk_size})')
+                    return web.json_response({
+                        "error": "blocked_empty_write",
+                        "message": f"Refusing to overwrite {disk_size} bytes with empty content",
+                        "path": str(path),
+                    }, status=400)
+            except Exception as check_err:
+                print(f'[FileWrite] Warning: Could not check file size: {check_err}')
+                # If we can't check, block to be safe
+                return web.json_response({
+                    "error": "blocked_empty_write",
+                    "message": "Cannot verify file before empty write",
+                    "path": str(path),
+                }, status=400)
+
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         mtime = path.stat().st_mtime
@@ -1135,6 +1163,66 @@ async def handle_file_relative(request: web.Request) -> web.Response:
 
     except PermissionError:
         return web.json_response({"error": "permission denied"}, status=403)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ==================== Asset Cleanup ====================
+
+
+async def handle_assets_cleanup(request: web.Request) -> web.Response:
+    """
+    Delete all asset files for a given execution ID.
+
+    This is used when re-running a code cell to clean up the previous execution's
+    assets (images, HTML files, etc.) before creating new ones.
+
+    Request body:
+        exec_id: The execution ID prefix to match (e.g., "exec-1704067200000-a3d2f")
+        assets_dir: The assets directory path (e.g., "/path/to/project/.mrmd/assets")
+
+    Response:
+        deleted: List of deleted file paths
+        count: Number of files deleted
+    """
+    try:
+        data = await request.json()
+        exec_id = data.get("exec_id")
+        assets_dir = data.get("assets_dir")
+
+        if not exec_id:
+            return web.json_response({"error": "exec_id required"}, status=400)
+        if not assets_dir:
+            return web.json_response({"error": "assets_dir required"}, status=400)
+
+        # Validate the exec_id format (basic security check)
+        if not exec_id.startswith("exec-"):
+            return web.json_response({"error": "invalid exec_id format"}, status=400)
+
+        assets_path = Path(assets_dir)
+        if not assets_path.exists():
+            return web.json_response({"deleted": [], "count": 0})
+
+        if not assets_path.is_dir():
+            return web.json_response({"error": "assets_dir is not a directory"}, status=400)
+
+        # Find and delete all files matching the exec_id prefix
+        deleted = []
+        pattern = f"{exec_id}_*"
+
+        for file_path in assets_path.glob(pattern):
+            if file_path.is_file():
+                try:
+                    file_path.unlink()
+                    deleted.append(str(file_path))
+                except Exception as e:
+                    print(f"[Assets] Failed to delete {file_path}: {e}", file=sys.stderr)
+
+        return web.json_response({
+            "deleted": deleted,
+            "count": len(deleted),
+        })
+
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -1915,6 +2003,7 @@ async def handle_ipython_execute(request: web.Request) -> web.Response:
         store_history = data.get("store_history", True)
         figure_dir = data.get("figure_dir")  # Directory to save matplotlib figures
         project_path = data.get("project_path")  # Project root for relative paths
+        exec_id = data.get("exec_id")  # Execution ID for asset naming
 
         session = manager.get_or_create(
             session_id,
@@ -1923,7 +2012,7 @@ async def handle_ipython_execute(request: web.Request) -> web.Response:
             figure_dir=figure_dir,
         )
 
-        result = session.execute(code, store_history=store_history)
+        result = session.execute(code, store_history=store_history, exec_id=exec_id)
 
         # Convert display_data to JSON-safe format
         display_data = []
@@ -2014,6 +2103,7 @@ async def handle_ipython_execute_stream(request: web.Request) -> web.StreamRespo
         store_history = data.get("store_history", True)
         figure_dir = data.get("figure_dir")
         project_path = data.get("project_path")  # For auto-restore of saved sessions
+        exec_id = data.get("exec_id")  # Execution ID for asset naming
 
         session = get_or_create_session_with_restore(
             manager,
@@ -2056,6 +2146,7 @@ async def handle_ipython_execute_stream(request: web.Request) -> web.StreamRespo
                     code,
                     on_output=on_output,
                     store_history=store_history,
+                    exec_id=exec_id,
                 )
             except Exception as e:
                 import traceback

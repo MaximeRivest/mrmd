@@ -663,8 +663,10 @@ async def handle_message(manager: CollabManager, session: UserSession, data: Dic
             # payload contains client's state vector (base64)
             client_state_b64 = payload.get('state_vector', '')
 
-            # Get or create document
-            await yjs.get_or_create_document(file_path)
+            # Get or create document - this validates against disk
+            yjs_doc = await yjs.get_or_create_document(file_path)
+            content_len = len(yjs_doc.content) if yjs_doc else 0
+            print(f'[Collab] sync_step1 for {file_path}: doc has {content_len} chars')
 
             if client_state_b64:
                 # Client has state - send diff
@@ -675,18 +677,21 @@ async def handle_message(manager: CollabManager, session: UserSession, data: Dic
                         'type': 'yjs_sync',
                         'subtype': 'sync_step2',
                         'payload': {
-                            'update': base64.b64encode(diff).decode('ascii')
+                            'update': base64.b64encode(diff).decode('ascii'),
+                            'content_length': content_len  # Help client validate
                         }
                     })
             else:
                 # Client has no state - send full document
                 full_state = yjs.get_full_state(file_path)
                 if full_state:
+                    print(f'[Collab] Sending full state: {len(full_state)} bytes, content: {content_len} chars')
                     await session.ws.send_json({
                         'type': 'yjs_sync',
                         'subtype': 'sync_step2',
                         'payload': {
-                            'update': base64.b64encode(full_state).decode('ascii')
+                            'update': base64.b64encode(full_state).decode('ascii'),
+                            'content_length': content_len  # Help client validate
                         }
                     })
 
@@ -758,6 +763,36 @@ async def handle_message(manager: CollabManager, session: UserSession, data: Dic
                     message,
                     exclude_session=session.session_id
                 )
+
+    elif msg_type == 'save_file':
+        # Save Yjs document content to the file on disk
+        # This is the safe way to save - avoids race conditions with file watcher
+        file_path = data.get('file_path')
+        if file_path:
+            yjs = get_yjs_manager()
+            if yjs and yjs.has_document(file_path):
+                success = await yjs.save_to_file(file_path)
+                await session.ws.send_json({
+                    'type': 'save_file_ack',
+                    'file_path': file_path,
+                    'success': success
+                })
+                if success:
+                    # Notify others that file was saved
+                    await manager.broadcast_to_file(file_path, {
+                        'type': 'file_saved',
+                        'session_id': session.session_id,
+                        'user_name': session.user_name,
+                        'file_path': file_path,
+                        'timestamp': time.time()
+                    }, exclude_session=session.session_id)
+            else:
+                await session.ws.send_json({
+                    'type': 'save_file_ack',
+                    'file_path': file_path,
+                    'success': False,
+                    'error': 'document_not_loaded'
+                })
 
     elif msg_type == 'watch_file':
         # Start watching a file for external changes (e.g., AI edits)

@@ -50,7 +50,7 @@ export interface Executor {
   /**
    * Execute code and return result
    */
-  execute(code: string, language: string): Promise<ExecutionResult>;
+  execute(code: string, language: string, execId?: string): Promise<ExecutionResult>;
 
   /**
    * Execute code with streaming output
@@ -58,7 +58,8 @@ export interface Executor {
   executeStreaming(
     code: string,
     language: string,
-    onChunk: StreamCallback
+    onChunk: StreamCallback,
+    execId?: string
   ): Promise<ExecutionResult>;
 
   /**
@@ -70,6 +71,11 @@ export interface Executor {
    * Check if executor supports a language
    */
   supports(language: string): boolean;
+
+  /**
+   * Clean up assets for a given execution ID
+   */
+  cleanupAssets?(execId: string): Promise<void>;
 }
 
 /**
@@ -80,7 +86,7 @@ export class MockExecutor implements Executor {
     return ['python', 'javascript', 'js'].includes(language.toLowerCase());
   }
 
-  async execute(code: string, language: string): Promise<ExecutionResult> {
+  async execute(code: string, language: string, execId?: string): Promise<ExecutionResult> {
     return new Promise((resolve) => {
       setTimeout(() => {
         resolve({
@@ -98,7 +104,8 @@ export class MockExecutor implements Executor {
   async executeStreaming(
     code: string,
     language: string,
-    onChunk: StreamCallback
+    onChunk: StreamCallback,
+    execId?: string
   ): Promise<ExecutionResult> {
     const outputs = this.getMockOutputs(code, language);
     let accumulated = '';

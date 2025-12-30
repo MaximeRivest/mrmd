@@ -27,6 +27,12 @@ import {
     type CompletionResult,
     type InspectionResult,
     type HoverResult,
+    // Yjs collaboration
+    createYjsSync,
+    type YjsDocManager,
+    // CollabService Yjs adapter (uses editor's Yjs instance to avoid dual-bundle issue)
+    createCollabServiceYjsAdapter,
+    type CollabServiceYjsAdapter,
 } from '/editor-dist/index.browser.js';
 
 // UI Module imports (legacy JS modules)
@@ -65,6 +71,8 @@ import * as VariablesPanel from '/core/variables-panel.js';
 import { InterfaceManager, createInterfaceManager } from './InterfaceManager';
 // @ts-ignore
 import { initEditorKeybindings } from '/core/editor-keybindings.js';
+// @ts-ignore
+import { KeybindingManager } from '/core/keybinding-manager.js';
 
 // AI Action Handler - bridges AI Palette → Editor Streaming Layer
 import {
@@ -110,6 +118,12 @@ interface AiPaletteAPI {
 
 let services: Services;
 let editor: MrmdEditor;
+
+// Yjs collaboration state (per-file)
+let currentYjsDoc: YjsDocManager | null = null;
+let currentYjsAdapter: CollabServiceYjsAdapter | null = null;
+let currentYjsFilePath: string | null = null;
+let useCollaboration = true;  // ENABLED - pycrdt/Yjs sync fixed with content validation
 let ipython: IPythonClient;
 let ipythonExecutor: IPythonExecutor;  // Executor for code blocks - needs session sync
 let aiClient: AiClient;
@@ -1537,6 +1551,9 @@ export async function mount(svc: Services, options: MountOptions = {}): Promise<
 
     // Check for noCollab mode
     noCollab = new URLSearchParams(window.location.search).has('noCollab');
+    if (noCollab) {
+        useCollaboration = false;
+    }
 
     // Initialize DOM references
     initDOMReferences();
@@ -1743,6 +1760,101 @@ function initEditor(): void {
 }
 
 // ============================================================================
+// Yjs Collaboration Setup
+// ============================================================================
+
+/**
+ * Clean up current Yjs collaboration state
+ */
+function cleanupYjsCollab(): void {
+    if (currentYjsAdapter) {
+        currentYjsAdapter.disconnect();
+        currentYjsAdapter = null;
+    }
+    if (currentYjsDoc) {
+        currentYjsDoc.destroy();
+        currentYjsDoc = null;
+    }
+    currentYjsFilePath = null;
+
+    // Clear Yjs extensions from editor (removes yCollab, cursors, etc.)
+    if (editor) {
+        editor.clearCollabExtensions();
+    }
+}
+
+/**
+ * Set up Yjs collaboration for a file.
+ *
+ * This uses the EXISTING editor and CollaborationService - no second WebSocket!
+ * Returns the synced content from Yjs.
+ */
+async function setupYjsForFile(filePath: string): Promise<string> {
+    // Clean up any existing Yjs state
+    cleanupYjsCollab();
+
+    console.log('[Yjs] Setting up collaboration for:', filePath);
+
+    const sessionInfo = services.collaboration.getSessionInfo();
+    const userId = sessionInfo?.session_id || 'local-user';
+    const userName = 'User';
+    const userColor = sessionInfo?.color || '#3b82f6';
+
+    // Create Yjs document manager
+    currentYjsDoc = createYjsSync({
+        userId,
+        userName,
+        userColor,
+        filePath,
+    });
+
+    // Create adapter that uses existing CollaborationService
+    currentYjsAdapter = createCollabServiceYjsAdapter(services.collaboration, filePath);
+
+    // Connect and wait for initial sync
+    currentYjsDoc.connectProvider(currentYjsAdapter);
+
+    console.log('[Yjs] Waiting for initial sync...');
+    await currentYjsAdapter.whenSynced();
+
+    currentYjsFilePath = filePath;
+
+    // Get synced content
+    const content = currentYjsDoc.getContent();
+    console.log('[Yjs] Sync complete, content length:', content.length);
+
+    // Add Yjs extensions to the editor (yCollab for cursors, undo manager, etc.)
+    // This must be done AFTER sync is complete so the Y.Text is ready
+    editor.setCollabExtensions(currentYjsDoc.getExtensions());
+
+    // Observe Yjs changes with origin tracking
+    // This is crucial: only autosave for LOCAL changes, not remote ones!
+    currentYjsDoc.observe((event, transaction) => {
+        const origin = transaction.origin;
+        const isLocal = origin !== 'remote' && origin !== 'external';
+
+        // Update AppState with new content
+        const newContent = currentYjsDoc!.getContent();
+
+        if (!silentUpdate && appState.currentFilePath === filePath) {
+            rawTextarea.value = newContent;
+            appState.updateFileContent(filePath, newContent, true);
+            updateFileIndicator();
+
+            // Only autosave for LOCAL changes
+            if (isLocal) {
+                console.log('[Yjs] Local change detected, scheduling autosave');
+                scheduleAutosave();
+            } else {
+                console.log('[Yjs] Remote change detected, NOT scheduling autosave');
+            }
+        }
+    });
+
+    return content;
+}
+
+// ============================================================================
 // Editor Helpers
 // ============================================================================
 
@@ -1943,7 +2055,7 @@ async function initCollaboration(): Promise<void> {
 
     const collab = services.collaboration;
 
-    collab.onConnected((info) => {
+    collab.onConnected(async (info) => {
         console.log('[Collab] Connected:', info.session_id);
         stopPollingFallback();
 
@@ -1953,6 +2065,44 @@ async function initCollaboration(): Promise<void> {
         for (const path of openPaths) {
             console.log('[Collab] Sending watch request for:', path);
             collab.watchFile(path);
+        }
+
+        // UPGRADE PATH: If current file is .md and was opened before collab connected,
+        // set up Yjs collaboration now. This handles the instant restore timing issue.
+        const currentPath = appState.currentFilePath;
+        if (currentPath && currentPath.endsWith('.md') && useCollaboration) {
+            // Check if Yjs is already set up for this file
+            if (!currentYjsDoc || currentYjsFilePath !== currentPath) {
+                console.log('[Collab] Upgrading current file to collaborative mode:', currentPath);
+
+                try {
+                    // Get current content from editor (what user sees)
+                    const currentContent = getContent();
+
+                    // Set up Yjs collaboration
+                    const syncedContent = await setupYjsForFile(currentPath);
+
+                    // If Yjs has different content, we need to decide which to use
+                    if (syncedContent.length > 0 && syncedContent !== currentContent) {
+                        console.log('[Collab] Yjs has different content, syncing editor');
+                        // Yjs has content from another session - use it but preserve undo
+                        setContent(syncedContent, true);
+                        rawTextarea.value = syncedContent;
+                        appState.updateFileContent(currentPath, syncedContent, false);
+                    } else if (syncedContent.length === 0 && currentContent.length > 0) {
+                        // Yjs is empty but we have content - push our content to Yjs
+                        console.log('[Collab] Yjs empty, pushing editor content to Yjs');
+                        if (currentYjsDoc) {
+                            currentYjsDoc.applyExternalChange(currentContent, 'init');
+                        }
+                    }
+
+                    console.log('[Collab] Successfully upgraded to collaborative mode');
+                } catch (err) {
+                    console.error('[Collab] Failed to upgrade to collaborative mode:', err);
+                    // Continue without Yjs - file watching still works
+                }
+            }
         }
 
         // Catch-up: Check for any changes that occurred while disconnected
@@ -2075,6 +2225,13 @@ function setupEventHandlers(): void {
         await saveCurrentFileNow();
     });
 
+    // Handle commands from quick-picker (e.g., Save button)
+    SessionState.on('command-executed', ({ command }: { command: string }) => {
+        if (command === 'save') {
+            saveFile();
+        }
+    });
+
     SessionState.on('project-opened', handleProjectOpened);
     SessionState.on('project-created', handleProjectCreated);
 
@@ -2181,6 +2338,11 @@ function setupKeyboardShortcuts(): void {
     // Initialize editor keybindings (code execution: Ctrl+Enter, Shift+Enter, etc.)
     // Use a getter function so keybindings always have the current editor reference
     initEditorKeybindings({ getEditor: () => editor, statusEl: execStatusEl });
+
+    // File save (Ctrl+S)
+    KeybindingManager.handle('file:save', () => {
+        saveFile();
+    });
 }
 
 function initVariablesPanel(): void {
@@ -2238,13 +2400,28 @@ async function openFile(path: string, options: { background?: boolean; cachedCon
     console.log('[Codes] Opening file:', path, options.cachedContent ? '(from cache)' : '', `(loadId: ${loadId})`);
 
     try {
-        // Use cached content if available (from project pool), otherwise fetch
-        let file: { content: string; mtime?: number };
+        const filename = path.split('/').pop() || path;
+        const isMarkdown = path.endsWith('.md');
+        const shouldUseCollab = useCollaboration && isMarkdown && services.collaboration.isConnected;
+
+        // ALWAYS read disk content first as safety baseline
+        // This is used to prevent data loss if Yjs syncs with empty content
+        let diskContent: string | null = null;
+        let diskMtime: number | undefined;
+
         if (options.cachedContent !== undefined) {
-            file = { content: options.cachedContent, mtime: options.cachedMtime };
-            console.log('[Codes] Using cached content for:', path);
+            diskContent = options.cachedContent;
+            diskMtime = options.cachedMtime;
+            console.log('[Codes] Using cached content for:', path, 'length:', diskContent.length);
         } else {
-            file = await services.documents.openFile(path);
+            try {
+                const diskFile = await services.documents.openFile(path);
+                diskContent = diskFile.content;
+                diskMtime = diskFile.mtime;
+                console.log('[Codes] Read disk content for:', path, 'length:', diskContent.length);
+            } catch (err) {
+                console.warn('[Codes] Failed to read disk content:', err);
+            }
         }
 
         // Check if a newer load was started while we were fetching
@@ -2253,25 +2430,91 @@ async function openFile(path: string, options: { background?: boolean; cachedCon
             return;
         }
 
-        appState.openFile(path, file.content, {
-            mtime: file.mtime ?? null,
-            modified: false,
-        });
+        // For collaborative editing, set up Yjs sync
+        // Content will be synced via Yjs from the server
+        if (shouldUseCollab && !options.background) {
+            // Set up UI state
+            appState.setCurrentFile(path);
+            SessionState.setActiveFile(path);
+            fileTabs?.addTab(path, filename, false);
+            fileTabs?.setActiveTab(path);
+            document.title = `${filename} - MRMD`;
+            editor.setFilePath(path);
 
-        // Register with external change handler manager
-        // This tracks lastKnownContent for conflict detection
-        externalChangeManager?.registerFile(path, file.content);
+            try {
+                // Set up Yjs collaboration - this waits for sync
+                const syncedContent = await setupYjsForFile(path);
 
-        // Watch for external changes to this file and join for real-time collab
-        if (services.collaboration.isConnected) {
-            services.collaboration.watchFile(path);
-            services.collaboration.joinFile(path);  // Enable Yjs sync and cursor sharing
+                // CRITICAL SAFETY CHECK: Prevent data loss from empty Yjs sync
+                // If Yjs returns empty content but disk has content, use disk content
+                let contentToUse = syncedContent;
+                if (syncedContent.length === 0 && diskContent && diskContent.length > 0) {
+                    console.error('[Codes] SAFETY: Yjs sync returned empty for non-empty file!');
+                    console.error('[Codes] SAFETY: Using disk content instead:', diskContent.length, 'chars');
+                    contentToUse = diskContent;
+
+                    // Update Yjs with the disk content so it's not lost
+                    if (currentYjsDoc) {
+                        console.log('[Codes] SAFETY: Restoring disk content to Yjs');
+                        currentYjsDoc.applyExternalChange(diskContent, 'safety-restore');
+                    }
+                }
+
+                // Update appState with the safe content
+                appState.openFile(path, contentToUse, {
+                    mtime: diskMtime ?? null,  // Keep disk mtime for reference
+                    modified: false,
+                });
+
+                // Update editor with the safe content
+                setContent(contentToUse, true);
+                rawTextarea.value = contentToUse;
+
+                // Register for external change tracking (for AI edit attribution)
+                externalChangeManager?.registerFile(path, contentToUse);
+
+                // Watch for external file changes (AI edits that go through file system)
+                services.collaboration.watchFile(path);
+
+                updateFileIndicator();
+
+                // Set up IPython session for .md files
+                const session = await SessionState.getNotebookSession(path);
+                if (loadId === currentFileLoadId) {
+                    ipython.setSession(session);
+                    SessionState.setCurrentSessionName(session);
+                }
+
+                console.log('[Codes] Collaborative file opened:', path, 'content length:', contentToUse.length);
+                return;
+            } catch (error) {
+                console.error('[Codes] Yjs sync failed, falling back to file-based:', error);
+                // Fall through to non-collaborative path
+            }
         }
 
-        const filename = path.split('/').pop() || path;
+        // For non-collaborative path, use disk content
+        const file = diskContent !== null ? { content: diskContent, mtime: diskMtime } : null;
+
+        // Non-collaborative path (non-.md files or collaboration disabled)
+        if (file) {
+            appState.openFile(path, file.content, {
+                mtime: file.mtime ?? null,
+                modified: false,
+            });
+
+            // Register with external change handler manager
+            externalChangeManager?.registerFile(path, file.content);
+        }
+
+        // Watch for external changes
+        if (services.collaboration.isConnected) {
+            services.collaboration.watchFile(path);
+        }
+
         fileTabs?.addTab(path, filename, false);
 
-        if (!options.background) {
+        if (!options.background && file) {
             // Double-check we're still the current load before updating editor
             if (loadId !== currentFileLoadId) {
                 console.log('[Codes] Skipping stale editor update:', path);
@@ -2279,9 +2522,9 @@ async function openFile(path: string, options: { background?: boolean; cachedCon
             }
 
             appState.setCurrentFile(path);
-            SessionState.setActiveFile(path);  // Sync to SessionState for Open Files panel
+            SessionState.setActiveFile(path);
             fileTabs?.setActiveTab(path);
-            editor.setFilePath(path);  // Set file path for execution queue
+            editor.setFilePath(path);
 
             setContent(file.content, true);
             rawTextarea.value = file.content;
@@ -2289,9 +2532,8 @@ async function openFile(path: string, options: { background?: boolean; cachedCon
             document.title = `${filename} - MRMD`;
             updateFileIndicator();
 
-            if (path.endsWith('.md')) {
+            if (isMarkdown) {
                 const session = await SessionState.getNotebookSession(path);
-                // Final check before updating session
                 if (loadId === currentFileLoadId) {
                     ipython.setSession(session);
                     SessionState.setCurrentSessionName(session);
@@ -2311,25 +2553,53 @@ async function saveFile(): Promise<void> {
     const currentPath = appState.currentFilePath;
     if (!currentPath) return;
 
-    // Use stored content from AppState for consistency
-    // (onChange keeps AppState in sync with editor)
-    const file = appState.openFiles.get(currentPath);
-    const content = file?.content ?? getContent();
     execStatusEl.textContent = 'saving...';
 
     try {
-        await services.documents.saveFile(currentPath, content);
-        appState.markFileSaved(currentPath);
+        // For Yjs-synced files, save via the server (writes Yjs content to file)
+        // This avoids race conditions with the file watcher
+        if (currentYjsDoc && currentPath.endsWith('.md')) {
+            const content = currentYjsDoc.getContent();
 
-        // Update external change manager's lastKnownContent
-        externalChangeManager?.markAsSaved(currentPath, content);
+            // SAFETY GUARD: Never save empty content to a non-empty file
+            const existingFile = appState.openFiles.get(currentPath);
+            if (content.length === 0 && existingFile?.content && existingFile.content.length > 0) {
+                console.error('[Save] BLOCKED: Refusing to save empty content to non-empty file:', currentPath);
+                execStatusEl.textContent = 'save blocked (empty)';
+                return;
+            }
+
+            console.log('[Yjs] Saving via server:', currentPath, 'length:', content.length);
+            services.collaboration.saveFile(currentPath);
+            appState.markFileSaved(currentPath);
+
+            // Update external change manager with current content
+            externalChangeManager?.markAsSaved(currentPath, content);
+        } else {
+            // Non-collaborative save: write directly to file
+            const file = appState.openFiles.get(currentPath);
+            const content = file?.content ?? getContent();
+
+            // SAFETY GUARD: Never save empty content to a non-empty file
+            if (content.length === 0 && file?.content && file.content.length > 0) {
+                console.error('[Save] BLOCKED: Refusing to save empty content to non-empty file:', currentPath);
+                execStatusEl.textContent = 'save blocked (empty)';
+                return;
+            }
+
+            await services.documents.saveFile(currentPath, content);
+            appState.markFileSaved(currentPath);
+
+            // Update external change manager's lastKnownContent
+            externalChangeManager?.markAsSaved(currentPath, content);
+
+            if (services.collaboration.isConnected) {
+                services.collaboration.notifyFileSaved(currentPath);
+            }
+        }
 
         updateFileIndicator();
         execStatusEl.textContent = 'saved';
-
-        if (services.collaboration.isConnected) {
-            services.collaboration.notifyFileSaved(currentPath);
-        }
 
         setTimeout(() => {
             if (execStatusEl.textContent === 'saved') {
@@ -2411,8 +2681,6 @@ async function saveCurrentFileNow(): Promise<void> {
 }
 
 async function doAutosaveForFile(filePath: string): Promise<void> {
-    // Read from AppState - the source of truth for this file's content
-    // NOT from getContent() which only shows what's currently in the editor
     const file = appState.openFiles.get(filePath);
     if (!file?.modified) return;
 
@@ -2425,12 +2693,36 @@ async function doAutosaveForFile(filePath: string): Promise<void> {
     }
 
     try {
-        // Use the stored content from AppState, not the editor
-        await services.documents.saveFile(filePath, file.content, { message: 'autosave' });
-        appState.markFileSaved(filePath);
+        // For Yjs-synced files, save via the server
+        if (currentYjsDoc && currentYjsFilePath === filePath && filePath.endsWith('.md')) {
+            const content = currentYjsDoc.getContent();
 
-        // Update external change manager's lastKnownContent
-        externalChangeManager?.markAsSaved(filePath, file.content);
+            // SAFETY GUARD: Never save empty content to a non-empty file
+            if (content.length === 0 && file.content && file.content.length > 0) {
+                console.error('[Autosave] BLOCKED: Refusing to save empty content:', filePath);
+                return;
+            }
+
+            console.log('[Autosave] Saving via Yjs server:', filePath, 'length:', content.length);
+            services.collaboration.saveFile(filePath);
+            appState.markFileSaved(filePath);
+            externalChangeManager?.markAsSaved(filePath, content);
+        } else {
+            // Non-collaborative: save from AppState
+            const content = file.content;
+
+            // SAFETY GUARD: Never save empty content
+            // Note: For more robust protection, we rely on server-side validation
+            // which checks the disk file size before allowing empty writes
+            if (content.length === 0) {
+                console.error('[Autosave] BLOCKED: Refusing to save empty content:', filePath);
+                return;
+            }
+
+            await services.documents.saveFile(filePath, content, { message: 'autosave' });
+            appState.markFileSaved(filePath);
+            externalChangeManager?.markAsSaved(filePath, content);
+        }
 
         lastSaveTime = Date.now();
 
@@ -2492,6 +2784,8 @@ async function createNewNotebook(projectPath?: string, initialContent?: string):
 
 async function handleTabSelect(path: string): Promise<void> {
     const currentPath = appState.currentFilePath;
+    const isMarkdown = path.endsWith('.md');
+    const shouldUseCollab = useCollaboration && isMarkdown && services.collaboration.isConnected;
 
     // CRITICAL: Before switching, save the FULL editor state (including undo history)
     if (currentPath && currentPath !== path) {
@@ -2501,18 +2795,59 @@ async function handleTabSelect(path: string): Promise<void> {
             autosaveTimer = null;
         }
 
-        // Save the full EditorState (preserves undo/redo history, cursor, selection)
-        appState.saveEditorState(currentPath, editor.view.state);
+        // For non-collaborative editing, save the editor state
+        // (For collaborative, the state is managed by Yjs)
+        if (!currentYjsDoc) {
+            appState.saveEditorState(currentPath, editor.view.state);
+        }
 
         // Save scroll position
         appState.updateFileScrollTop(currentPath, container.scrollTop);
     }
 
+    // For collaborative editing on .md files, set up Yjs sync
+    if (shouldUseCollab) {
+        const filename = path.split('/').pop() || path;
+        document.title = `${filename} - MRMD`;
+        appState.setCurrentFile(path);
+        SessionState.setActiveFile(path);
+        editor.setFilePath(path);
+
+        try {
+            // Set up Yjs collaboration
+            const syncedContent = await setupYjsForFile(path);
+
+            // Update appState and editor with synced content
+            appState.openFile(path, syncedContent, { mtime: null, modified: false });
+            setContent(syncedContent, true);
+            rawTextarea.value = syncedContent;
+            updateFileIndicator();
+
+            // Watch for external file changes
+            services.collaboration.watchFile(path);
+
+            const session = await SessionState.getNotebookSession(path);
+            ipython.setSession(session);
+            SessionState.setCurrentSessionName(session);
+            return;
+        } catch (error) {
+            console.error('[Codes] Yjs sync failed on tab switch:', error);
+            // Fall through to non-collaborative path
+        }
+    }
+
+    // Non-collaborative path
     const file = appState.openFiles.get(path);
     if (file) {
+        // Clean up Yjs if switching from collaborative to non-collaborative file
+        if (currentYjsDoc) {
+            console.log('[Yjs] Cleaning up Yjs for non-.md file switch');
+            cleanupYjsCollab();
+        }
+
         // Try to restore the full EditorState (with undo history)
         const savedState = appState.getEditorState(path);
-        if (savedState) {
+        if (savedState && editor?.view) {
             // Restore full state including undo history
             editor.view.setState(savedState as import('@codemirror/state').EditorState);
             rawTextarea.value = file.content;
@@ -2534,7 +2869,7 @@ async function handleTabSelect(path: string): Promise<void> {
             container.scrollTop = file.scrollTop;
         });
 
-        if (path.endsWith('.md')) {
+        if (isMarkdown) {
             const session = await SessionState.getNotebookSession(path);
             ipython.setSession(session);
             SessionState.setCurrentSessionName(session);
@@ -2567,11 +2902,18 @@ async function handleTabClose(path: string): Promise<void> {
         services.collaboration.unwatchFile(path);
     }
 
+    // If closing the current Yjs file, clean up
+    if (currentYjsFilePath === path) {
+        console.log('[Yjs] Cleaning up Yjs for closed file:', path);
+        cleanupYjsCollab();
+    }
+
     const newActivePath = appState.closeFile(path);
 
     if (newActivePath) {
         await handleTabSelect(newActivePath);
     } else {
+        // No more files open
         setContent('', true);
         rawTextarea.value = '';
         document.title = 'MRMD';

@@ -2,7 +2,7 @@
  * Shared types for Atelier applications (Study & Codes)
  */
 
-import type { IDocumentService, IExecutionService, ICollaborationService } from '../../services/interfaces';
+import type { IDocumentService, ICollaborationService } from '../../services/interfaces';
 
 // ============================================================================
 // Service Container
@@ -10,7 +10,6 @@ import type { IDocumentService, IExecutionService, ICollaborationService } from 
 
 export interface Services {
     documents: IDocumentService;
-    execution: IExecutionService;
     collaboration: ICollaborationService;
 }
 

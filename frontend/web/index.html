@@ -33,6 +33,32 @@
             <div class="editor-container" id="editor-container"></div>
             <div class="heading-minimap" id="heading-minimap"></div>
             <div class="status-bar">
+                <!-- Essential (left) - always visible -->
+                <button class="mode-toggle-btn" id="mode-toggle-btn" title="Switch to Compact Mode (Ctrl+\)">◇ Compact</button>
+                <span class="ai-run-group">
+                    <span class="ai-run-juice" id="ai-run-juice" title="Click to change juice level">
+                        <span class="juice-seg" data-level="0"></span>
+                        <span class="juice-seg" data-level="1"></span>
+                        <span class="juice-seg" data-level="2"></span>
+                        <span class="juice-seg" data-level="3"></span>
+                        <span class="juice-seg" data-level="4"></span>
+                    </span>
+                    <button class="ai-run-btn" id="ai-run-btn" title="Run AI on document (document as prompt)">AI ▶</button>
+                </span>
+                <span class="exec-status" id="exec-status">ready</span>
+                <span class="status-divider">|</span>
+                <!-- Context (middle) - hide when narrow -->
+                <span class="status-indicator session-badge" id="session-badge" title="Click to change session">
+                    <span class="badge-icon">λ</span>
+                    <span class="badge-label" id="session-label">main</span>
+                </span>
+                <span>Cursor: <code id="cursor-pos">0</code></span>
+                <span>Line: <code id="edit-line">-</code></span>
+                <span class="status-divider">|</span>
+                <!-- Expendable (right) - hide first -->
+                <span class="status-indicator venv-badge" id="venv-badge" title="Click to change venv">
+                    <span class="badge-label" id="venv-label">.venv</span>
+                </span>
                 <span class="status-indicator notification-badge" id="notification-badge" title="Notifications">
                     <span class="badge-icon">●</span>
                     <span class="badge-count">0</span>
@@ -41,17 +67,8 @@
                     <span class="badge-icon">◐</span>
                     <span class="badge-count">0</span>
                 </span>
-                <span class="status-divider">|</span>
-                <span class="status-indicator session-badge" id="session-badge" title="Click to change session">
-                    <span class="badge-icon">λ</span>
-                    <span class="badge-label" id="session-label">main</span>
-                </span>
-                <span class="status-indicator venv-badge" id="venv-badge" title="Click to change venv">
-                    <span class="badge-label" id="venv-label">.venv</span>
-                </span>
-                <span class="status-divider">|</span>
-                <span>Cursor: <code id="cursor-pos">0</code></span>
-                <span>Line: <code id="edit-line">-</code></span>
+                <button class="restart-btn" id="restart-kernel" title="Restart IPython kernel">⟳ Kernel</button>
+                <button class="restart-btn restart-server" id="restart-server" title="Restart server (reloads code)">⟳ Server</button>
                 <span class="theme-picker-wrapper">
                     <button class="theme-picker-btn" id="theme-picker-btn" title="Change theme">
                         <span class="theme-icon">◐</span>
@@ -76,20 +93,6 @@
                         </div>
                     </div>
                 </span>
-                <button class="restart-btn" id="restart-kernel" title="Restart IPython kernel">⟳ Kernel</button>
-                <button class="restart-btn restart-server" id="restart-server" title="Restart server (reloads code)">⟳ Server</button>
-                <button class="mode-toggle-btn" id="mode-toggle-btn" title="Switch to Compact Mode (Ctrl+\)">◇ Compact</button>
-                <span class="ai-run-group">
-                    <span class="ai-run-juice" id="ai-run-juice" title="Click to change juice level">
-                        <span class="juice-seg" data-level="0"></span>
-                        <span class="juice-seg" data-level="1"></span>
-                        <span class="juice-seg" data-level="2"></span>
-                        <span class="juice-seg" data-level="3"></span>
-                        <span class="juice-seg" data-level="4"></span>
-                    </span>
-                    <button class="ai-run-btn" id="ai-run-btn" title="Run AI on document (document as prompt)">AI ▶</button>
-                </span>
-                <span class="exec-status" id="exec-status">ready</span>
             </div>
         </div>
         <div class="sidebar-resizer" id="sidebar-resizer"></div>

@@ -209,7 +209,7 @@ class YjsDocumentManager:
     # Yjs Sync Protocol
     # =========================================================================
 
-    async def apply_update(self, file_path: str, update: bytes) -> bool:
+    async def apply_update(self, file_path: str, update: bytes, broadcast: bool = False) -> bool:
         """
         Apply a Yjs update to a document.
 
@@ -219,6 +219,9 @@ class YjsDocumentManager:
         Args:
             file_path: Path to the document
             update: Binary Yjs update
+            broadcast: Whether to trigger the on_document_changed callback.
+                      Set to False when caller handles broadcasting (e.g., client updates).
+                      Set to True for server-initiated changes (e.g., file watcher).
 
         Returns:
             True if applied successfully, False otherwise
@@ -232,8 +235,8 @@ class YjsDocumentManager:
             yjs_doc.last_modified = time.time()
             yjs_doc.pending_save = True
 
-            # Notify listeners
-            if self._on_document_changed:
+            # Only notify listeners if requested (avoids double-broadcast for client updates)
+            if broadcast and self._on_document_changed:
                 await self._on_document_changed(file_path, update)
 
             return True
@@ -332,6 +335,12 @@ class YjsDocumentManager:
         """
         yjs_doc = await self.get_or_create_document(file_path, content)
 
+        # Skip if content is unchanged (prevents echo when saving to file)
+        current_content = yjs_doc.content
+        if current_content == content:
+            print(f'[YjsManager] Content unchanged for {file_path}, skipping update')
+            return None
+
         # Get state before change
         old_state = bytes(yjs_doc.doc.get_state())
 
@@ -391,7 +400,14 @@ class YjsDocumentManager:
             print(f'[YjsManager] Failed to save {yjs_doc.file_path}: {e}')
 
     async def _load_from_storage(self, file_path: str) -> Optional[Doc]:
-        """Load a document from persistence storage."""
+        """
+        Load a document from persistence storage with validation.
+
+        CRITICAL: We validate the persisted Yjs state against the actual disk file.
+        If they don't match, we discard the Yjs state and return None to force
+        a fresh load from disk. This prevents stale/corrupted .yjs files from
+        causing empty document syncs.
+        """
         if not self._storage_dir:
             return None
 
@@ -406,10 +422,46 @@ class YjsDocumentManager:
             doc = Doc()
             doc.apply_update(state)
 
-            print(f'[YjsManager] Loaded from storage: {file_path}')
+            # VALIDATION: Compare Yjs content with disk file
+            yjs_content = str(doc.get('content', type=Text))
+
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        disk_content = f.read()
+
+                    if yjs_content != disk_content:
+                        # Stale Yjs state - disk has different content
+                        print(f'[YjsManager] Persisted state STALE for {file_path}')
+                        print(f'[YjsManager]   Yjs: {len(yjs_content)} chars, Disk: {len(disk_content)} chars')
+                        # Delete the stale .yjs file
+                        try:
+                            storage_path.unlink()
+                            print(f'[YjsManager]   Deleted stale .yjs file')
+                        except Exception:
+                            pass
+                        return None  # Force fresh load from disk
+
+                except Exception as e:
+                    print(f'[YjsManager] Could not validate against disk: {e}')
+                    # If we can't read disk but Yjs is empty, don't trust it
+                    if len(yjs_content) == 0:
+                        print(f'[YjsManager] Empty Yjs state, discarding')
+                        return None
+
+            print(f'[YjsManager] Loaded from storage: {file_path} ({len(yjs_content)} chars)')
             return doc
         except Exception as e:
             print(f'[YjsManager] Failed to load {file_path} from storage: {e}')
+            # Delete corrupted .yjs file
+            try:
+                safe_name = file_path.replace('/', '__').replace('\\', '__')
+                storage_path = self._storage_dir / f'{safe_name}.yjs'
+                if storage_path.exists():
+                    storage_path.unlink()
+                    print(f'[YjsManager] Deleted corrupted .yjs file')
+            except Exception:
+                pass
             return None
 
     async def _save_all_pending(self):
@@ -435,6 +487,9 @@ class YjsDocumentManager:
 
         This writes the Y.Text content to disk as a regular file.
 
+        SAFETY: Refuses to write empty content to a non-empty file to prevent
+        data loss from sync issues.
+
         Args:
             file_path: Path to the document
 
@@ -447,9 +502,27 @@ class YjsDocumentManager:
 
         try:
             content = yjs_doc.content
+
+            # CRITICAL SAFETY CHECK: Never write empty content to non-empty file
+            # This prevents data loss if Yjs sync fails or returns empty
+            if len(content) == 0:
+                try:
+                    # Check if file exists and has content
+                    import os
+                    if os.path.exists(file_path):
+                        disk_size = os.path.getsize(file_path)
+                        if disk_size > 0:
+                            print(f'[YjsManager] BLOCKED: Refusing to write empty content to non-empty file: {file_path} (disk size: {disk_size})')
+                            return False
+                except Exception as check_err:
+                    print(f'[YjsManager] Warning: Could not check disk file: {check_err}')
+                    # If we can't check, block the empty write to be safe
+                    print(f'[YjsManager] BLOCKED: Refusing to write empty content (could not verify disk): {file_path}')
+                    return False
+
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(content)
-            print(f'[YjsManager] Saved to file: {file_path}')
+            print(f'[YjsManager] Saved to file: {file_path} ({len(content)} chars)')
             return True
         except Exception as e:
             print(f'[YjsManager] Failed to save to file {file_path}: {e}')

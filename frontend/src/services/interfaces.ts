@@ -450,6 +450,9 @@ export interface ICollaborationService {
     notifyFileSaved(filePath: string, versionId?: string | number | null, content?: string | null): void;
     getPresence(filePath?: string): void;
 
+    // File saving (for Yjs-based collaboration)
+    saveFile(filePath: string): void;
+
     // File watching
     watchFile(filePath: string): void;
     unwatchFile(filePath: string): void;

@@ -27,17 +27,19 @@ export interface IPythonClient {
   setProjectPath(projectPath: string): void;
   setFigureDir(figureDir: string): void;
 
-  execute(code: string, storeHistory?: boolean): Promise<IPythonExecutionResult | null>;
+  execute(code: string, storeHistory?: boolean, execId?: string): Promise<IPythonExecutionResult | null>;
 
   executeStreaming(
     code: string,
     onChunk: (accumulated: string, done: boolean) => void,
-    storeHistory?: boolean
+    storeHistory?: boolean,
+    execId?: string
   ): Promise<IPythonExecutionResult | null>;
 
   complete(code: string, cursorPos: number): Promise<IPythonCompletionResult | null>;
   inspect(code: string, cursorPos: number, detailLevel?: number): Promise<IPythonInspectionResult | null>;
   reset(): Promise<{ success: boolean } | null>;
+  cleanupAssets?(execId: string): Promise<{ deleted: string[]; count: number } | null>;
 }
 
 /**
@@ -128,12 +130,12 @@ export class IPythonExecutor implements Executor {
   /**
    * Execute code and return result
    */
-  async execute(code: string, language: string): Promise<ExecutionResult> {
+  async execute(code: string, language: string, execId?: string): Promise<ExecutionResult> {
     if (!this.supports(language)) {
       return this.unsupportedLanguageResult(language);
     }
 
-    const result = await this.client.execute(code);
+    const result = await this.client.execute(code, true, execId);
     return this.convertResult(result);
   }
 
@@ -143,7 +145,8 @@ export class IPythonExecutor implements Executor {
   async executeStreaming(
     code: string,
     language: string,
-    onChunk: StreamCallback
+    onChunk: StreamCallback,
+    execId?: string
   ): Promise<ExecutionResult> {
     if (!this.supports(language)) {
       return this.unsupportedLanguageResult(language);
@@ -158,7 +161,9 @@ export class IPythonExecutor implements Executor {
         const chunk = accumulated.slice(lastAccumulated.length);
         lastAccumulated = accumulated;
         onChunk(chunk, accumulated, done);
-      }
+      },
+      true,
+      execId
     );
 
     return this.convertResult(result);
@@ -310,6 +315,15 @@ export class IPythonExecutor implements Executor {
     const result = await this.client.reset();
     return result?.success ?? false;
   }
+
+  /**
+   * Clean up assets for a given execution ID
+   */
+  async cleanupAssets(execId: string): Promise<void> {
+    if (this.client.cleanupAssets) {
+      await this.client.cleanupAssets(execId);
+    }
+  }
 }
 
 /**
@@ -350,11 +364,13 @@ export function createMinimalIPythonClient(apiBase: string): IPythonClient {
     setProjectPath(path: string) { projectPath = path; },
     setFigureDir(dir: string) { figureDir = dir; },
 
-    async execute(code: string, storeHistory = true) {
-      return makeRequest('/api/ipython/execute', { code, store_history: storeHistory });
+    async execute(code: string, storeHistory = true, execId?: string) {
+      const body: Record<string, unknown> = { code, store_history: storeHistory };
+      if (execId) body.exec_id = execId;
+      return makeRequest('/api/ipython/execute', body);
     },
 
-    async executeStreaming(code, onChunk, storeHistory = true) {
+    async executeStreaming(code, onChunk, storeHistory = true, execId?: string) {
       return new Promise((resolve, reject) => {
         const body: Record<string, unknown> = {
           code,
@@ -363,6 +379,7 @@ export function createMinimalIPythonClient(apiBase: string): IPythonClient {
         };
         if (projectPath) body.project_path = projectPath;
         if (figureDir) body.figure_dir = figureDir;
+        if (execId) body.exec_id = execId;
 
         fetch(`${apiBase}/api/ipython/execute/stream`, {
           method: 'POST',
@@ -437,6 +454,16 @@ export function createMinimalIPythonClient(apiBase: string): IPythonClient {
 
     async reset() {
       return makeRequest('/api/ipython/reset', {});
+    },
+
+    async cleanupAssets(execId: string) {
+      if (!figureDir) {
+        return { deleted: [], count: 0 };
+      }
+      return makeRequest('/api/assets/cleanup', {
+        exec_id: execId,
+        assets_dir: figureDir,
+      });
     },
   };
 }

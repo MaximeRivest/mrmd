@@ -224,6 +224,19 @@ export async function createCollaborativeEditor(
       userColor,
       autoReconnect: true,
       maxReconnectAttempts: 10,
+      // Handle sync mismatch: server has content but we got empty
+      // This can happen if pycrdt/Yjs binary encoding differs
+      onSyncMismatch: (serverContentLength: number) => {
+        console.warn('[CollaborativeEditor] Sync mismatch detected, server has', serverContentLength, 'chars');
+        // Return initial doc as fallback if available
+        if (initialDoc && initialDoc.length > 0) {
+          console.log('[CollaborativeEditor] Using initial doc as fallback');
+          return initialDoc;
+        }
+        // No fallback available - the document will be empty
+        console.warn('[CollaborativeEditor] No fallback content available');
+        return undefined;
+      },
     });
   } else {
     // Use binary y-protocols (for y-websocket/pycrdt-websocket)

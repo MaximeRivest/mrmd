@@ -332,9 +332,6 @@ body {
     background: var(--bg);
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
 }
 
 .bar {
@@ -4591,7 +4588,9 @@ html, body {
     flex-direction: column;
     position: relative; /* for minimap positioning */
     min-width: 0; /* Allow flex child to shrink below content size */
+    min-height: 0; /* Allow flex child to shrink in column layout */
     overflow: hidden;
+    container-type: inline-size; /* For status bar responsive queries */
 }
 
 
@@ -4757,6 +4756,7 @@ html, body {
  * ============================================================================ */
 
 .status-bar {
+    flex-shrink: 0;
     padding: 8px 20px;
     background: var(--bg);
     font-size: 11px;
@@ -4785,7 +4785,6 @@ html, body {
 }
 
 .status-bar .exec-status {
-    margin-left: auto;
     font-style: italic;
 }
 
@@ -4860,6 +4859,50 @@ html, body {
 
 .status-divider {
     color: rgba(255, 255, 255, 0.2);
+}
+
+/* Status bar responsive behavior - priority-based progressive disclosure
+ * Container is .editor-pane (set above)
+ * HTML order: Essential → Context → Expendable (left to right)
+ * As width shrinks, rightmost items naturally clip or get hidden
+ */
+
+/* Medium width: hide expendable items (rightmost) */
+@container (max-width: 700px) {
+    .theme-picker-wrapper,
+    .restart-btn,
+    .notification-badge,
+    .running-badge,
+    .venv-badge {
+        display: none;
+    }
+    .status-divider:last-of-type {
+        display: none;
+    }
+}
+
+/* Narrow width: hide context items too */
+@container (max-width: 500px) {
+    .status-bar > span:has(#edit-line),
+    .status-bar > span:has(#cursor-pos),
+    .status-divider {
+        display: none;
+    }
+    .status-bar {
+        gap: 12px;
+    }
+}
+
+/* Very narrow: minimal - just essentials */
+@container (max-width: 380px) {
+    .session-badge,
+    .ai-run-juice {
+        display: none;
+    }
+    .status-bar {
+        gap: 8px;
+        padding: 8px 12px;
+    }
 }
 
 /* ============================================================================

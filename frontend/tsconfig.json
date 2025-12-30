@@ -13,12 +13,14 @@
     "allowJs": true,
     "baseUrl": ".",
     "paths": {
-      "/editor-dist/index.browser.js": ["core/editor-dist.d.ts"]
+      "/editor-dist/index.browser.js": ["core/editor-dist.d.ts"],
+      "/core/ipython-client.js": ["core/ipython-client.ts"]
     }
   },
   "include": [
     "core/globals.d.ts",
     "core/editor-dist.d.ts",
+    "core/*.ts",
     "src"
   ],
   "exclude": ["node_modules", "dist"]

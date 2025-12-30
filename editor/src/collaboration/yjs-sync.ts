@@ -30,12 +30,12 @@ export interface YjsSyncConfig {
   userColor: string;
   /** File path being edited */
   filePath: string;
-  /** Initial document content (for new docs or when no server state) */
-  initialContent?: string;
   /** Called when doc syncs with server */
   onSync?: () => void;
   /** Called on sync error */
   onError?: (error: Error) => void;
+  // NOTE: initialContent was removed. Content must be initialized AFTER sync
+  // completes to prevent conflicts. Use yjsDoc.ytext.insert() after whenSynced().
 }
 
 /**
@@ -70,12 +70,10 @@ export class YjsDocManager {
       colorLight: this.lightenColor(config.userColor, 0.8),
     });
 
-    // Initialize with content if provided and doc is empty
-    if (config.initialContent && this.ytext.length === 0) {
-      this.ydoc.transact(() => {
-        this.ytext.insert(0, config.initialContent!);
-      }, 'init');
-    }
+    // NOTE: Do NOT initialize content here! Content initialization must happen
+    // AFTER sync completes to avoid conflicts with server state. The calling
+    // code (collaborative-editor.ts) handles this correctly by waiting for
+    // provider.whenSynced() before initializing content.
 
     console.log('[YjsSync] Document created for', config.filePath);
   }

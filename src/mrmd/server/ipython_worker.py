@@ -97,6 +97,7 @@ class IPythonWorker:
         self._captured_displays: List[Dict[str, Any]] = []
         self._figure_counter = 0
         self._interrupt_requested = False
+        self._current_exec_id: Optional[str] = None  # Current execution ID for asset naming
 
     def _ensure_initialized(self):
         """Lazy initialization of IPython shell."""
@@ -187,7 +188,11 @@ class IPythonWorker:
         fig_dir.mkdir(parents=True, exist_ok=True)
 
         self._figure_counter += 1
-        filename = f"output_{self._figure_counter:04d}.{extension}"
+        # Include exec_id in filename for tracking and cleanup
+        if self._current_exec_id:
+            filename = f"{self._current_exec_id}_{self._figure_counter:04d}.{extension}"
+        else:
+            filename = f"output_{self._figure_counter:04d}.{extension}"
         filepath = fig_dir / filename
 
         filepath.write_bytes(content)
@@ -203,7 +208,11 @@ class IPythonWorker:
         fig_dir.mkdir(parents=True, exist_ok=True)
 
         self._figure_counter += 1
-        filename = f"output_{self._figure_counter:04d}.{extension}"
+        # Include exec_id in filename for tracking and cleanup
+        if self._current_exec_id:
+            filename = f"{self._current_exec_id}_{self._figure_counter:04d}.{extension}"
+        else:
+            filename = f"output_{self._figure_counter:04d}.{extension}"
         filepath = fig_dir / filename
 
         filepath.write_text(content, encoding='utf-8')
@@ -516,9 +525,12 @@ class IPythonWorker:
                         buf.seek(0)
                         png_bytes = buf.getvalue()
 
-                        # Save as asset
+                        # Save as asset with exec_id in filename
                         worker._figure_counter += 1
-                        filename = f"figure_{worker._figure_counter:04d}.png"
+                        if worker._current_exec_id:
+                            filename = f"{worker._current_exec_id}_{worker._figure_counter:04d}.png"
+                        else:
+                            filename = f"figure_{worker._figure_counter:04d}.png"
                         filepath = fig_dir / filename
                         filepath.write_bytes(png_bytes)
 
@@ -581,9 +593,12 @@ class IPythonWorker:
                     buf.seek(0)
                     png_bytes = buf.getvalue()
 
-                    # Save as asset
+                    # Save as asset with exec_id in filename
                     worker._figure_counter += 1
-                    filename = f"figure_{worker._figure_counter:04d}.png"
+                    if worker._current_exec_id:
+                        filename = f"{worker._current_exec_id}_{worker._figure_counter:04d}.png"
+                    else:
+                        filename = f"figure_{worker._figure_counter:04d}.png"
                     filepath = fig_dir / filename
                     filepath.write_bytes(png_bytes)
 
@@ -692,10 +707,12 @@ class IPythonWorker:
             # Silently ignore if autoreload isn't available
             pass
 
-    def execute(self, code: str, store_history: bool = True) -> ExecutionResult:
+    def execute(self, code: str, store_history: bool = True, exec_id: Optional[str] = None) -> ExecutionResult:
         """Execute code and return result."""
         self._ensure_initialized()
         self._captured_displays = []
+        self._current_exec_id = exec_id  # Set for asset naming
+        self._figure_counter = 0  # Reset counter for each execution
 
         old_stdout, old_stderr = sys.stdout, sys.stderr
         sys.stdout = captured_stdout = io.StringIO()
@@ -751,10 +768,11 @@ class IPythonWorker:
             sys.stdout, sys.stderr = old_stdout, old_stderr
             result.stdout = captured_stdout.getvalue()
             result.stderr = captured_stderr.getvalue()
+            self._current_exec_id = None  # Clear after execution
 
         return result
 
-    def execute_streaming(self, code: str, request_id: str, store_history: bool = True):
+    def execute_streaming(self, code: str, request_id: str, store_history: bool = True, exec_id: Optional[str] = None):
         """Execute code with streaming output.
 
         Uses PTY (pseudo-terminal) for stdout/stderr redirection so that:
@@ -766,6 +784,8 @@ class IPythonWorker:
         """
         self._ensure_initialized()
         self._captured_displays = []
+        self._current_exec_id = exec_id  # Set for asset naming
+        self._figure_counter = 0  # Reset counter for each execution
 
         # Try to use PTY for TTY emulation (enables ANSI colors)
         use_pty = False
@@ -958,6 +978,7 @@ class IPythonWorker:
 
             result.stdout = ''.join(accumulated_stdout)
             result.stderr = ''.join(accumulated_stderr)
+            self._current_exec_id = None  # Clear after execution
 
         return result
 
@@ -1598,11 +1619,12 @@ def handle_request(worker: IPythonWorker, request: Dict[str, Any]) -> Dict[str, 
             code = params.get("code", "")
             store_history = params.get("store_history", True)
             streaming = params.get("streaming", False)
+            exec_id = params.get("exec_id")  # Execution ID for asset naming
 
             if streaming:
-                result = worker.execute_streaming(code, request_id, store_history)
+                result = worker.execute_streaming(code, request_id, store_history, exec_id=exec_id)
             else:
-                result = worker.execute(code, store_history)
+                result = worker.execute(code, store_history, exec_id=exec_id)
 
             return {"id": request_id, "result": asdict(result)}
 

@@ -217,7 +217,7 @@ export class ExecutionTracker {
         // Get current display state and update output
         const displayContent = buffer.toString();
         this.replaceOutputContent(execId, displayContent);
-      });
+      }, execId);
     } catch (error) {
       success = false;
       if (!controller.signal.aborted) {
@@ -324,7 +324,7 @@ export class ExecutionTracker {
         // Get current display state (with cursor movements resolved, colors preserved)
         const displayContent = buffer.toString();
         this.replaceOutputContent(execId, displayContent);
-      });
+      }, execId);
     } catch (error) {
       if (!controller.signal.aborted) {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -485,20 +485,32 @@ export class ExecutionTracker {
       const outputStart = codeBlockEnd + 1;
       const restOfDoc = state.doc.sliceString(outputStart, state.doc.length);
       const backticks = existingOutput[1]; // Captured backtick sequence
-      const outputRegex = new RegExp(`^(\`{${backticks.length},})output(?::[^\\n]*)?\\n([\\s\\S]*?)\\1`);
+      const outputRegex = new RegExp(`^(\`{${backticks.length},})output(?::([^\\n]*))?\\n([\\s\\S]*?)\\1`);
       const outputMatch = restOfDoc.match(outputRegex);
 
       if (outputMatch) {
+        // Extract old exec_id from the existing output block (group 2)
+        const oldExecId = outputMatch[2];
+
         // Find the end of the output block
         let deleteEnd = outputStart + outputMatch[0].length;
 
-        // Check for and remove any trailing image-output blocks
-        const afterOutput = state.doc.sliceString(deleteEnd, deleteEnd + 500);
-        const imageOutputPattern = /^(\n```image-output:[^\n]*\n[\s\S]*?```)+/;
-        const imageOutputMatch = afterOutput.match(imageOutputPattern);
+        // Check for and remove any trailing image-output and html-rendered blocks
+        const afterOutput = state.doc.sliceString(deleteEnd, deleteEnd + 2000);
+        // Match consecutive image-output and html-rendered blocks (in any order)
+        const outputBlockPattern = /^(\n```(?:image-output|html-rendered):[^\n]*\n[\s\S]*?```)+/;
+        const outputBlockMatch = afterOutput.match(outputBlockPattern);
 
-        if (imageOutputMatch) {
-          deleteEnd += imageOutputMatch[0].length;
+        if (outputBlockMatch) {
+          deleteEnd += outputBlockMatch[0].length;
+        }
+
+        // Trigger cleanup of old assets if we have a valid old exec_id
+        if (oldExecId && oldExecId.startsWith('exec-') && this.executor.cleanupAssets) {
+          // Fire and forget - don't block the UI for cleanup
+          this.executor.cleanupAssets(oldExecId).catch((err) => {
+            console.warn('[ExecutionTracker] Asset cleanup failed:', err);
+          });
         }
 
         this.dispatchChange({

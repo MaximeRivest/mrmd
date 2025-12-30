@@ -117,6 +117,9 @@ export {
   CollabAdapterYjsProvider,
   YjsAwarenessAdapter,
   createYjsAwarenessAdapter,
+  // CollabService adapter (uses editor's Yjs instance)
+  CollabServiceYjsAdapter,
+  createCollabServiceYjsAdapter,
   // Locks
   LockManager,
   createLockManager,
@@ -151,6 +154,11 @@ export type {
   AwarenessState,
   AwarenessProvider,
   AwarenessSyncManager,
+  // CollabService adapter types
+  CollabServiceInterface,
+  YjsSyncPayload,
+  YjsUpdatePayload,
+  YjsProviderInterface,
   // Lock types
   Lock,
   LockState,

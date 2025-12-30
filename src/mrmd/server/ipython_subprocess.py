@@ -362,13 +362,16 @@ class SubprocessIPythonSession:
             if request_id in self._stream_callbacks:
                 del self._stream_callbacks[request_id]
 
-    def execute(self, code: str, store_history: bool = True) -> ExecutionResult:
+    def execute(self, code: str, store_history: bool = True, exec_id: str = None) -> ExecutionResult:
         """Execute code and return result."""
-        response = self._send_request("execute", {
+        params = {
             "code": code,
             "store_history": store_history,
             "streaming": False,
-        })
+        }
+        if exec_id:
+            params["exec_id"] = exec_id
+        response = self._send_request("execute", params)
 
         if "error" in response:
             result = ExecutionResult(success=False)
@@ -393,6 +396,7 @@ class SubprocessIPythonSession:
         on_output: Callable[[str, str], None],
         store_history: bool = True,
         timeout: float = 300.0,
+        exec_id: str = None,
     ) -> ExecutionResult:
         """
         Execute code with streaming output.
@@ -402,17 +406,21 @@ class SubprocessIPythonSession:
             on_output: Callback(stream_name, content) for each output chunk
             store_history: Whether to store in history
             timeout: Timeout in seconds (default 5 minutes)
+            exec_id: Execution ID for asset naming
 
         Returns:
             ExecutionResult after completion
         """
+        params = {
+            "code": code,
+            "store_history": store_history,
+            "streaming": True,
+        }
+        if exec_id:
+            params["exec_id"] = exec_id
         response = self._send_request(
             "execute",
-            {
-                "code": code,
-                "store_history": store_history,
-                "streaming": True,
-            },
+            params,
             timeout=timeout,
             stream_callback=on_output,
         )

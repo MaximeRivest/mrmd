@@ -1,2 +1,11 @@
 # MRMD editor state
 .mrmd/
+
+# Compiled TypeScript in core/ (source is .ts, output is .js)
+# Add more files here as they are migrated to TypeScript
+core/ipython-client.js
+core/ipython-client.js.map
+
+# Compiled boot entry point
+src/boot.js
+src/boot.js.map

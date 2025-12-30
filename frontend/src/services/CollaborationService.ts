@@ -132,6 +132,10 @@ export class CollaborationService implements ICollaborationService {
         });
     }
 
+    saveFile(filePath: string): void {
+        this.send({ type: 'save_file', file_path: filePath });
+    }
+
     watchFile(filePath: string): void {
         this.send({ type: 'watch_file', file_path: filePath });
     }

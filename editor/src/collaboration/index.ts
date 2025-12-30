@@ -209,3 +209,18 @@ export type {
   CollaborativeEditorConfig,
   CollaborativeEditor,
 } from './collaborative-editor';
+
+// ============================================
+// CollabService Yjs Adapter
+// Bridges frontend CollaborationService to Yjs using editor's Yjs instance
+// ============================================
+export {
+  CollabServiceYjsAdapter,
+  createCollabServiceYjsAdapter,
+} from './collab-service-adapter';
+export type {
+  CollabServiceInterface,
+  YjsSyncPayload,
+  YjsUpdatePayload,
+  YjsProviderInterface,
+} from './collab-service-adapter';

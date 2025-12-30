@@ -67,6 +67,11 @@ export interface MrmdYjsProviderConfig {
   onFileChange?: (event: FileChangeEvent) => void;
   /** Called when directory contents change */
   onDirectoryChange?: (event: DirectoryChangeEvent) => void;
+  /**
+   * Called when sync validation fails (server has content but client is empty).
+   * Return content to initialize the document, or undefined to retry sync.
+   */
+  onSyncMismatch?: (serverContentLength: number) => string | undefined;
 }
 
 /**
@@ -397,28 +402,39 @@ export class MrmdYjsProvider implements YjsProvider {
         if (!this.ydoc) return;
 
         const updateB64 = payload.update as string;
+        const serverContentLength = payload.content_length as number | undefined;
+
         if (updateB64) {
           const update = this.fromBase64(updateB64);
-          console.log('[MrmdYjsProvider] Received sync_step2, update size:', update.length, 'bytes');
-
-          // Get text length before
-          const textBefore = this.ydoc.getText('content').toString();
-          console.log('[MrmdYjsProvider] Text before apply:', textBefore.length, 'chars');
+          console.log('[MrmdYjsProvider] Received sync_step2, update size:', update.length, 'bytes, server content:', serverContentLength);
 
           Y.applyUpdate(this.ydoc, update, this);
 
-          // Get text length after
-          const textAfter = this.ydoc.getText('content').toString();
-          console.log('[MrmdYjsProvider] Text after apply:', textAfter.length, 'chars');
-          if (textAfter.length > 0) {
-            console.log('[MrmdYjsProvider] First 100 chars:', textAfter.substring(0, 100));
+          const localContent = this.ydoc.getText('content').toString();
+          console.log('[MrmdYjsProvider] After apply:', localContent.length, 'chars');
+
+          // VALIDATION: Check if sync result matches server's content length
+          if (serverContentLength !== undefined && serverContentLength > 0 && localContent.length === 0) {
+            console.warn('[MrmdYjsProvider] SYNC MISMATCH: Server has', serverContentLength, 'chars but local is empty');
+
+            // Ask the app layer what to do
+            if (this.config.onSyncMismatch) {
+              const fallbackContent = this.config.onSyncMismatch(serverContentLength);
+              if (fallbackContent !== undefined) {
+                // Initialize with fallback content
+                console.log('[MrmdYjsProvider] Using fallback content:', fallbackContent.length, 'chars');
+                this.ydoc.transact(() => {
+                  this.ydoc!.getText('content').insert(0, fallbackContent);
+                }, 'sync-fallback');
+              }
+            }
           }
 
           if (!this.synced) {
             this.synced = true;
             this.resolveSynced();
             this.config.onSync?.();
-            console.log('[MrmdYjsProvider] Initial sync complete');
+            console.log('[MrmdYjsProvider] Initial sync complete, content:', this.ydoc.getText('content').length, 'chars');
           }
         }
         break;

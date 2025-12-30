@@ -1258,9 +1258,11 @@ __export(codes_exports, {
 });
 import {
   createEditor,
-  IPythonExecutor
+  IPythonExecutor,
+  createYjsSync,
+  createCollabServiceYjsAdapter
 } from "/editor-dist/index.browser.js";
-import { IPythonClient as IPythonClient2 } from "/core/ipython-client.js";
+import { IPythonClient } from "/core/ipython-client.js";
 import * as SessionState2 from "/core/session-state.js";
 import { createFileTabs } from "/core/file-tabs.js";
 import { createRecentProjectsPanel } from "/core/recent-projects.js";
@@ -1275,6 +1277,7 @@ import { toggleMode, HomeScreen } from "/core/compact-mode.js";
 import { initSelectionToolbar } from "/core/selection-toolbar.js";
 import * as VariablesPanel from "/core/variables-panel.js";
 import { initEditorKeybindings } from "/core/editor-keybindings.js";
+import { KeybindingManager } from "/core/keybinding-manager.js";
 async function mount(svc, options = {}) {
   const defaultMode = options.defaultMode ?? "developer";
   const modeName = defaultMode === "compact" ? "Study" : "Codes";
@@ -1283,6 +1286,9 @@ async function mount(svc, options = {}) {
   SessionState2.setInterfaceMode(defaultMode);
   SessionState2.setAppState(appState);
   noCollab = new URLSearchParams(window.location.search).has("noCollab");
+  if (noCollab) {
+    useCollaboration = false;
+  }
   initDOMReferences();
   initClients();
   initEditor();
@@ -1306,7 +1312,7 @@ function initDOMReferences() {
   }
 }
 function initClients() {
-  ipython = new IPythonClient2({ apiBase: "" });
+  ipython = new IPythonClient({ apiBase: "" });
   aiClient = new AiClient();
   aiClient.isAvailable().then((available) => {
     if (available) {
@@ -1419,6 +1425,59 @@ function initEditor() {
       );
     }
   });
+}
+function cleanupYjsCollab() {
+  if (currentYjsAdapter) {
+    currentYjsAdapter.disconnect();
+    currentYjsAdapter = null;
+  }
+  if (currentYjsDoc) {
+    currentYjsDoc.destroy();
+    currentYjsDoc = null;
+  }
+  currentYjsFilePath = null;
+  if (editor) {
+    editor.clearCollabExtensions();
+  }
+}
+async function setupYjsForFile(filePath) {
+  cleanupYjsCollab();
+  console.log("[Yjs] Setting up collaboration for:", filePath);
+  const sessionInfo = services.collaboration.getSessionInfo();
+  const userId = sessionInfo?.session_id || "local-user";
+  const userName = "User";
+  const userColor = sessionInfo?.color || "#3b82f6";
+  currentYjsDoc = createYjsSync({
+    userId,
+    userName,
+    userColor,
+    filePath
+  });
+  currentYjsAdapter = createCollabServiceYjsAdapter(services.collaboration, filePath);
+  currentYjsDoc.connectProvider(currentYjsAdapter);
+  console.log("[Yjs] Waiting for initial sync...");
+  await currentYjsAdapter.whenSynced();
+  currentYjsFilePath = filePath;
+  const content = currentYjsDoc.getContent();
+  console.log("[Yjs] Sync complete, content length:", content.length);
+  editor.setCollabExtensions(currentYjsDoc.getExtensions());
+  currentYjsDoc.observe((event, transaction) => {
+    const origin = transaction.origin;
+    const isLocal = origin !== "remote" && origin !== "external";
+    const newContent = currentYjsDoc.getContent();
+    if (!silentUpdate && appState.currentFilePath === filePath) {
+      rawTextarea.value = newContent;
+      appState.updateFileContent(filePath, newContent, true);
+      updateFileIndicator();
+      if (isLocal) {
+        console.log("[Yjs] Local change detected, scheduling autosave");
+        scheduleAutosave();
+      } else {
+        console.log("[Yjs] Remote change detected, NOT scheduling autosave");
+      }
+    }
+  });
+  return content;
 }
 function setContent(markdown, silent = false) {
   if (silent) {
@@ -1559,7 +1618,7 @@ async function initCollaboration() {
     return;
   }
   const collab = services.collaboration;
-  collab.onConnected((info) => {
+  collab.onConnected(async (info) => {
     console.log("[Collab] Connected:", info.session_id);
     stopPollingFallback();
     const openPaths = Array.from(appState.openFiles.keys());
@@ -1567,6 +1626,30 @@ async function initCollaboration() {
     for (const path of openPaths) {
       console.log("[Collab] Sending watch request for:", path);
       collab.watchFile(path);
+    }
+    const currentPath = appState.currentFilePath;
+    if (currentPath && currentPath.endsWith(".md") && useCollaboration) {
+      if (!currentYjsDoc || currentYjsFilePath !== currentPath) {
+        console.log("[Collab] Upgrading current file to collaborative mode:", currentPath);
+        try {
+          const currentContent = getContent();
+          const syncedContent = await setupYjsForFile(currentPath);
+          if (syncedContent.length > 0 && syncedContent !== currentContent) {
+            console.log("[Collab] Yjs has different content, syncing editor");
+            setContent(syncedContent, true);
+            rawTextarea.value = syncedContent;
+            appState.updateFileContent(currentPath, syncedContent, false);
+          } else if (syncedContent.length === 0 && currentContent.length > 0) {
+            console.log("[Collab] Yjs empty, pushing editor content to Yjs");
+            if (currentYjsDoc) {
+              currentYjsDoc.applyExternalChange(currentContent, "init");
+            }
+          }
+          console.log("[Collab] Successfully upgraded to collaborative mode");
+        } catch (err) {
+          console.error("[Collab] Failed to upgrade to collaborative mode:", err);
+        }
+      }
     }
     catchUpMissedChanges();
   });
@@ -1647,6 +1730,11 @@ function setupEventHandlers() {
   });
   SessionState2.on("save-now", async () => {
     await saveCurrentFileNow();
+  });
+  SessionState2.on("command-executed", ({ command }) => {
+    if (command === "save") {
+      saveFile();
+    }
   });
   SessionState2.on("project-opened", handleProjectOpened);
   SessionState2.on("project-created", handleProjectCreated);
@@ -1734,6 +1822,9 @@ function setupEventHandlers() {
 }
 function setupKeyboardShortcuts() {
   initEditorKeybindings({ getEditor: () => editor, statusEl: execStatusEl });
+  KeybindingManager.handle("file:save", () => {
+    saveFile();
+  });
 }
 function initVariablesPanel() {
   const variablesPanelContainer = document.getElementById("variables-panel");
@@ -1769,29 +1860,82 @@ async function openFile(path, options = {}) {
   const loadId = ++currentFileLoadId;
   console.log("[Codes] Opening file:", path, options.cachedContent ? "(from cache)" : "", `(loadId: ${loadId})`);
   try {
-    let file;
+    const filename = path.split("/").pop() || path;
+    const isMarkdown = path.endsWith(".md");
+    const shouldUseCollab = useCollaboration && isMarkdown && services.collaboration.isConnected;
+    let diskContent = null;
+    let diskMtime;
     if (options.cachedContent !== void 0) {
-      file = { content: options.cachedContent, mtime: options.cachedMtime };
-      console.log("[Codes] Using cached content for:", path);
+      diskContent = options.cachedContent;
+      diskMtime = options.cachedMtime;
+      console.log("[Codes] Using cached content for:", path, "length:", diskContent.length);
     } else {
-      file = await services.documents.openFile(path);
+      try {
+        const diskFile = await services.documents.openFile(path);
+        diskContent = diskFile.content;
+        diskMtime = diskFile.mtime;
+        console.log("[Codes] Read disk content for:", path, "length:", diskContent.length);
+      } catch (err) {
+        console.warn("[Codes] Failed to read disk content:", err);
+      }
     }
     if (loadId !== currentFileLoadId && !options.background) {
       console.log("[Codes] Skipping stale file load:", path, `(loadId: ${loadId}, current: ${currentFileLoadId})`);
       return;
     }
-    appState.openFile(path, file.content, {
-      mtime: file.mtime ?? null,
-      modified: false
-    });
-    externalChangeManager?.registerFile(path, file.content);
+    if (shouldUseCollab && !options.background) {
+      appState.setCurrentFile(path);
+      SessionState2.setActiveFile(path);
+      fileTabs?.addTab(path, filename, false);
+      fileTabs?.setActiveTab(path);
+      document.title = `${filename} - MRMD`;
+      editor.setFilePath(path);
+      try {
+        const syncedContent = await setupYjsForFile(path);
+        let contentToUse = syncedContent;
+        if (syncedContent.length === 0 && diskContent && diskContent.length > 0) {
+          console.error("[Codes] SAFETY: Yjs sync returned empty for non-empty file!");
+          console.error("[Codes] SAFETY: Using disk content instead:", diskContent.length, "chars");
+          contentToUse = diskContent;
+          if (currentYjsDoc) {
+            console.log("[Codes] SAFETY: Restoring disk content to Yjs");
+            currentYjsDoc.applyExternalChange(diskContent, "safety-restore");
+          }
+        }
+        appState.openFile(path, contentToUse, {
+          mtime: diskMtime ?? null,
+          // Keep disk mtime for reference
+          modified: false
+        });
+        setContent(contentToUse, true);
+        rawTextarea.value = contentToUse;
+        externalChangeManager?.registerFile(path, contentToUse);
+        services.collaboration.watchFile(path);
+        updateFileIndicator();
+        const session = await SessionState2.getNotebookSession(path);
+        if (loadId === currentFileLoadId) {
+          ipython.setSession(session);
+          SessionState2.setCurrentSessionName(session);
+        }
+        console.log("[Codes] Collaborative file opened:", path, "content length:", contentToUse.length);
+        return;
+      } catch (error) {
+        console.error("[Codes] Yjs sync failed, falling back to file-based:", error);
+      }
+    }
+    const file = diskContent !== null ? { content: diskContent, mtime: diskMtime } : null;
+    if (file) {
+      appState.openFile(path, file.content, {
+        mtime: file.mtime ?? null,
+        modified: false
+      });
+      externalChangeManager?.registerFile(path, file.content);
+    }
     if (services.collaboration.isConnected) {
       services.collaboration.watchFile(path);
-      services.collaboration.joinFile(path);
     }
-    const filename = path.split("/").pop() || path;
     fileTabs?.addTab(path, filename, false);
-    if (!options.background) {
+    if (!options.background && file) {
       if (loadId !== currentFileLoadId) {
         console.log("[Codes] Skipping stale editor update:", path);
         return;
@@ -1804,7 +1948,7 @@ async function openFile(path, options = {}) {
       rawTextarea.value = file.content;
       document.title = `${filename} - MRMD`;
       updateFileIndicator();
-      if (path.endsWith(".md")) {
+      if (isMarkdown) {
         const session = await SessionState2.getNotebookSession(path);
         if (loadId === currentFileLoadId) {
           ipython.setSession(session);
@@ -1817,6 +1961,52 @@ async function openFile(path, options = {}) {
       console.error("[Codes] Failed to open file:", err);
       showNotification("Error", `Failed to open file: ${err}`, "error");
     }
+  }
+}
+async function saveFile() {
+  const currentPath = appState.currentFilePath;
+  if (!currentPath)
+    return;
+  execStatusEl.textContent = "saving...";
+  try {
+    if (currentYjsDoc && currentPath.endsWith(".md")) {
+      const content = currentYjsDoc.getContent();
+      const existingFile = appState.openFiles.get(currentPath);
+      if (content.length === 0 && existingFile?.content && existingFile.content.length > 0) {
+        console.error("[Save] BLOCKED: Refusing to save empty content to non-empty file:", currentPath);
+        execStatusEl.textContent = "save blocked (empty)";
+        return;
+      }
+      console.log("[Yjs] Saving via server:", currentPath, "length:", content.length);
+      services.collaboration.saveFile(currentPath);
+      appState.markFileSaved(currentPath);
+      externalChangeManager?.markAsSaved(currentPath, content);
+    } else {
+      const file = appState.openFiles.get(currentPath);
+      const content = file?.content ?? getContent();
+      if (content.length === 0 && file?.content && file.content.length > 0) {
+        console.error("[Save] BLOCKED: Refusing to save empty content to non-empty file:", currentPath);
+        execStatusEl.textContent = "save blocked (empty)";
+        return;
+      }
+      await services.documents.saveFile(currentPath, content);
+      appState.markFileSaved(currentPath);
+      externalChangeManager?.markAsSaved(currentPath, content);
+      if (services.collaboration.isConnected) {
+        services.collaboration.notifyFileSaved(currentPath);
+      }
+    }
+    updateFileIndicator();
+    execStatusEl.textContent = "saved";
+    setTimeout(() => {
+      if (execStatusEl.textContent === "saved") {
+        execStatusEl.textContent = "ready";
+      }
+    }, 1e3);
+  } catch (err) {
+    console.error("[Codes] Save failed:", err);
+    execStatusEl.textContent = "save failed";
+    showNotification("Error", `Save failed: ${err}`, "error");
   }
 }
 function scheduleAutosave() {
@@ -1874,9 +2064,26 @@ async function doAutosaveForFile(filePath) {
     execStatusEl.textContent = "autosaving...";
   }
   try {
-    await services.documents.saveFile(filePath, file.content, { message: "autosave" });
-    appState.markFileSaved(filePath);
-    externalChangeManager?.markAsSaved(filePath, file.content);
+    if (currentYjsDoc && currentYjsFilePath === filePath && filePath.endsWith(".md")) {
+      const content = currentYjsDoc.getContent();
+      if (content.length === 0 && file.content && file.content.length > 0) {
+        console.error("[Autosave] BLOCKED: Refusing to save empty content:", filePath);
+        return;
+      }
+      console.log("[Autosave] Saving via Yjs server:", filePath, "length:", content.length);
+      services.collaboration.saveFile(filePath);
+      appState.markFileSaved(filePath);
+      externalChangeManager?.markAsSaved(filePath, content);
+    } else {
+      const content = file.content;
+      if (content.length === 0) {
+        console.error("[Autosave] BLOCKED: Refusing to save empty content:", filePath);
+        return;
+      }
+      await services.documents.saveFile(filePath, content, { message: "autosave" });
+      appState.markFileSaved(filePath);
+      externalChangeManager?.markAsSaved(filePath, content);
+    }
     lastSaveTime = Date.now();
     if (appState.currentFilePath === filePath) {
       updateFileIndicator();
@@ -1915,18 +2122,47 @@ async function createNewNotebook(projectPath, initialContent) {
 }
 async function handleTabSelect(path) {
   const currentPath = appState.currentFilePath;
+  const isMarkdown = path.endsWith(".md");
+  const shouldUseCollab = useCollaboration && isMarkdown && services.collaboration.isConnected;
   if (currentPath && currentPath !== path) {
     if (autosaveTimer) {
       clearTimeout(autosaveTimer);
       autosaveTimer = null;
     }
-    appState.saveEditorState(currentPath, editor.view.state);
+    if (!currentYjsDoc) {
+      appState.saveEditorState(currentPath, editor.view.state);
+    }
     appState.updateFileScrollTop(currentPath, container.scrollTop);
+  }
+  if (shouldUseCollab) {
+    const filename = path.split("/").pop() || path;
+    document.title = `${filename} - MRMD`;
+    appState.setCurrentFile(path);
+    SessionState2.setActiveFile(path);
+    editor.setFilePath(path);
+    try {
+      const syncedContent = await setupYjsForFile(path);
+      appState.openFile(path, syncedContent, { mtime: null, modified: false });
+      setContent(syncedContent, true);
+      rawTextarea.value = syncedContent;
+      updateFileIndicator();
+      services.collaboration.watchFile(path);
+      const session = await SessionState2.getNotebookSession(path);
+      ipython.setSession(session);
+      SessionState2.setCurrentSessionName(session);
+      return;
+    } catch (error) {
+      console.error("[Codes] Yjs sync failed on tab switch:", error);
+    }
   }
   const file = appState.openFiles.get(path);
   if (file) {
+    if (currentYjsDoc) {
+      console.log("[Yjs] Cleaning up Yjs for non-.md file switch");
+      cleanupYjsCollab();
+    }
     const savedState = appState.getEditorState(path);
-    if (savedState) {
+    if (savedState && editor?.view) {
       editor.view.setState(savedState);
       rawTextarea.value = file.content;
     } else {
@@ -1942,7 +2178,7 @@ async function handleTabSelect(path) {
     requestAnimationFrame(() => {
       container.scrollTop = file.scrollTop;
     });
-    if (path.endsWith(".md")) {
+    if (isMarkdown) {
       const session = await SessionState2.getNotebookSession(path);
       ipython.setSession(session);
       SessionState2.setCurrentSessionName(session);
@@ -1965,6 +2201,10 @@ async function handleTabClose(path) {
   externalChangeManager?.unregisterFile(path);
   if (services.collaboration.isConnected) {
     services.collaboration.unwatchFile(path);
+  }
+  if (currentYjsFilePath === path) {
+    console.log("[Yjs] Cleaning up Yjs for closed file:", path);
+    cleanupYjsCollab();
   }
   const newActivePath = appState.closeFile(path);
   if (newActivePath) {
@@ -2499,7 +2739,7 @@ async function loadInitialState() {
   await SessionState2.initialize();
   HomeScreen.show();
 }
-var services, editor, ipython, ipythonExecutor, aiClient, fileTabs, fileBrowser, terminalTabs, notificationManager, aiPalette, historyPanel, interfaceManager, aiActionHandler, container, rawTextarea, cursorPosEl, execStatusEl, browserRoot, documentBasePath, silentUpdate, AUTOSAVE_DELAY, AUTOSAVE_MAX_INTERVAL, autosaveTimer, lastSaveTime, autosavePaused, fileCheckInterval, noCollab, currentFileLoadId, externalChangeManager, ExternalChangeHandlerManager, ClaudePresenceIndicator, claudePresenceIndicator, ConflictResolutionUI, conflictResolutionUI, activeAIUsers;
+var services, editor, currentYjsDoc, currentYjsAdapter, currentYjsFilePath, useCollaboration, ipython, ipythonExecutor, aiClient, fileTabs, fileBrowser, terminalTabs, notificationManager, aiPalette, historyPanel, interfaceManager, aiActionHandler, container, rawTextarea, cursorPosEl, execStatusEl, browserRoot, documentBasePath, silentUpdate, AUTOSAVE_DELAY, AUTOSAVE_MAX_INTERVAL, autosaveTimer, lastSaveTime, autosavePaused, fileCheckInterval, noCollab, currentFileLoadId, externalChangeManager, ExternalChangeHandlerManager, ClaudePresenceIndicator, claudePresenceIndicator, ConflictResolutionUI, conflictResolutionUI, activeAIUsers;
 var init_codes = __esm({
   "src/apps/codes/index.ts"() {
     "use strict";
@@ -2507,6 +2747,10 @@ var init_codes = __esm({
     init_imageUrl();
     init_InterfaceManager();
     init_ai_action_handler();
+    currentYjsDoc = null;
+    currentYjsAdapter = null;
+    currentYjsFilePath = null;
+    useCollaboration = true;
     notificationManager = null;
     historyPanel = null;
     interfaceManager = null;
@@ -3830,329 +4074,6 @@ var DocumentService = class {
   }
 };
 
-// src/services/IPythonClient.ts
-var IPythonClient = class {
-  constructor(options = {}) {
-    __publicField(this, "apiBase");
-    __publicField(this, "sessionId");
-    __publicField(this, "projectPath");
-    __publicField(this, "figureDir");
-    __publicField(this, "_fetch");
-    this.apiBase = options.apiBase || "";
-    this.sessionId = options.sessionId || "main";
-    this.projectPath = options.projectPath || null;
-    this.figureDir = options.figureDir || null;
-    this._fetch = options.fetch || globalThis.fetch.bind(globalThis);
-  }
-  setSession(sessionId) {
-    this.sessionId = sessionId;
-  }
-  setProjectPath(projectPath) {
-    this.projectPath = projectPath;
-  }
-  setFigureDir(figureDir) {
-    this.figureDir = figureDir;
-  }
-  async _request(endpoint, body = {}) {
-    try {
-      const requestBody = { session: this.sessionId, ...body };
-      if (this.figureDir) {
-        requestBody.figure_dir = this.figureDir;
-      }
-      if (this.projectPath) {
-        requestBody.project_path = this.projectPath;
-      }
-      const res = await this._fetch(`${this.apiBase}${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestBody)
-      });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-      }
-      return await res.json();
-    } catch (err) {
-      console.error(`IPython API error (${endpoint}):`, err);
-      return null;
-    }
-  }
-  async _get(endpoint) {
-    try {
-      const res = await this._fetch(`${this.apiBase}${endpoint}`, {
-        method: "GET"
-      });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-      }
-      return await res.json();
-    } catch (err) {
-      console.error(`IPython API error (${endpoint}):`, err);
-      return null;
-    }
-  }
-  async complete(code, cursorPos) {
-    return this._request("/api/ipython/complete", { code, cursor_pos: cursorPos });
-  }
-  async inspect(code, cursorPos, detailLevel = 0) {
-    return this._request("/api/ipython/inspect", {
-      code,
-      cursor_pos: cursorPos,
-      detail_level: detailLevel
-    });
-  }
-  async execute(code, storeHistory = true) {
-    return this._request("/api/ipython/execute", {
-      code,
-      store_history: storeHistory
-    });
-  }
-  async executeStreaming(code, onChunk, storeHistory = true) {
-    return new Promise((resolve, reject) => {
-      let finalResult = null;
-      const body = {
-        code,
-        session: this.sessionId,
-        store_history: storeHistory
-      };
-      if (this.projectPath) {
-        body.project_path = this.projectPath;
-      }
-      if (this.figureDir) {
-        body.figure_dir = this.figureDir;
-      }
-      this._fetch(`${this.apiBase}/api/ipython/execute/stream`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      }).then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`Streaming execution failed: ${response.statusText}`);
-        }
-        if (!response.body) {
-          throw new Error("No response body");
-        }
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done)
-            break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-          let eventType = "";
-          let eventData = "";
-          for (const line of lines) {
-            if (line.startsWith("event: ")) {
-              eventType = line.slice(7);
-            } else if (line.startsWith("data: ")) {
-              eventData = line.slice(6);
-              if (eventType && eventData) {
-                try {
-                  const parsed = JSON.parse(eventData);
-                  if (eventType === "chunk") {
-                    const accumulated = parsed.accumulated || parsed.content || "";
-                    onChunk(accumulated, false);
-                  } else if (eventType === "result") {
-                    finalResult = parsed;
-                  } else if (eventType === "done") {
-                    onChunk(finalResult?.formatted_output || "", true);
-                    resolve(finalResult);
-                  }
-                } catch (e) {
-                  console.error("SSE parse error:", e);
-                }
-                eventType = "";
-                eventData = "";
-              }
-            }
-          }
-        }
-        if (finalResult) {
-          resolve(finalResult);
-        } else {
-          resolve(null);
-        }
-      }).catch((error) => {
-        console.error("Streaming execution error:", error);
-        reject(error);
-      });
-    });
-  }
-  async getVariables() {
-    return this._request("/api/ipython/variables", {});
-  }
-  async hoverInspect(name) {
-    return this._request("/api/ipython/hover", { name });
-  }
-  async isComplete(code) {
-    return this._request("/api/ipython/is_complete", { code });
-  }
-  async inspectObject(path) {
-    return this._request("/api/ipython/inspect_object", { path });
-  }
-  async reset() {
-    return this._request("/api/ipython/reset", {});
-  }
-  async interrupt() {
-    return this._request("/api/ipython/interrupt", {});
-  }
-  async sessionInfo() {
-    return this._request("/api/ipython/session_info", {});
-  }
-  async reconfigure(options = {}) {
-    return this._request("/api/ipython/reconfigure", {
-      python_path: options.pythonPath,
-      cwd: options.cwd
-    });
-  }
-  async listSessions() {
-    return this._get("/api/ipython/sessions");
-  }
-  async formatCode(code, language = "python") {
-    return this._request("/api/ipython/format", { code, language });
-  }
-  async restartServer() {
-    return this._request("/api/server/restart", {});
-  }
-};
-
-// src/services/ExecutionService.ts
-var ExecutionService = class {
-  constructor() {
-    __publicField(this, "client");
-    __publicField(this, "_isRunning", false);
-    __publicField(this, "_listeners", {
-      executionStart: /* @__PURE__ */ new Set(),
-      executionComplete: /* @__PURE__ */ new Set(),
-      statusChange: /* @__PURE__ */ new Set()
-    });
-    this.client = new IPythonClient();
-  }
-  get isRunning() {
-    return this._isRunning;
-  }
-  setProjectPath(path) {
-    this.client.setProjectPath(path);
-    this.client.setFigureDir(path + "/.mrmd/assets");
-  }
-  setSessionId(sessionId) {
-    this.client.setSession(sessionId);
-  }
-  async runCode(code, lang) {
-    return this.runBlock(void 0, code, lang);
-  }
-  async runBlock(blockId, code, lang) {
-    if (this._isRunning) {
-      console.warn("Execution already in progress, queueing not yet implemented in Service");
-    }
-    this._isRunning = true;
-    this._emit("statusChange", "busy");
-    this._emit("executionStart", blockId);
-    try {
-      if (lang !== "python") {
-        const result2 = {
-          success: false,
-          stdout: "",
-          stderr: `Language '${lang}' not supported yet in ExecutionService`,
-          result: "",
-          display_data: []
-        };
-        this._finish(result2, blockId);
-        return result2;
-      }
-      const result = await this.client.executeStreaming(code, (accumulated, done) => {
-      });
-      if (!result) {
-        throw new Error("Execution returned null");
-      }
-      this._finish(result, blockId);
-      return result;
-    } catch (err) {
-      const errorResult = {
-        success: false,
-        stdout: "",
-        stderr: err.message || "Unknown execution error",
-        result: "",
-        error: {
-          ename: "Error",
-          evalue: err.message,
-          traceback: []
-        },
-        display_data: []
-      };
-      this._finish(errorResult, blockId);
-      return errorResult;
-    }
-  }
-  _finish(result, blockId) {
-    this._isRunning = false;
-    this._emit("statusChange", "idle");
-    this._emit("executionComplete", result, blockId);
-  }
-  async cancelExecution() {
-    await this.interruptKernel();
-  }
-  async restartKernel() {
-    this._emit("statusChange", "starting");
-    await this.client.restartServer();
-    this._emit("statusChange", "idle");
-  }
-  async interruptKernel() {
-    await this.client.interrupt();
-  }
-  async resetKernel() {
-    await this.client.reset();
-  }
-  async getVariables() {
-    return this.client.getVariables();
-  }
-  async complete(code, cursorPos) {
-    return this.client.complete(code, cursorPos);
-  }
-  async inspect(code, cursorPos, detailLevel = 0) {
-    return this.client.inspect(code, cursorPos, detailLevel);
-  }
-  async inspectObject(path) {
-    return this.client.inspectObject(path);
-  }
-  async hover(name) {
-    return this.client.hoverInspect(name);
-  }
-  async isComplete(code) {
-    return this.client.isComplete(code);
-  }
-  async getSessionInfo() {
-    return this.client.sessionInfo();
-  }
-  async listSessions() {
-    return this.client.listSessions();
-  }
-  async reconfigureSession(options) {
-    return this.client.reconfigure(options);
-  }
-  async formatCode(code, language = "python") {
-    return this.client.formatCode(code, language);
-  }
-  // Events
-  onExecutionStart(callback) {
-    this._listeners.executionStart.add(callback);
-    return () => this._listeners.executionStart.delete(callback);
-  }
-  onExecutionComplete(callback) {
-    this._listeners.executionComplete.add(callback);
-    return () => this._listeners.executionComplete.delete(callback);
-  }
-  onStatusChange(callback) {
-    this._listeners.statusChange.add(callback);
-    return () => this._listeners.statusChange.delete(callback);
-  }
-  _emit(event, ...args) {
-    this._listeners[event].forEach((cb) => cb(...args));
-  }
-};
-
 // src/services/CollaborationService.ts
 var CollaborationService = class {
   constructor() {
@@ -4250,6 +4171,9 @@ var CollaborationService = class {
       type: "get_presence",
       file_path: filePath
     });
+  }
+  saveFile(filePath) {
+    this.send({ type: "save_file", file_path: filePath });
   }
   watchFile(filePath) {
     this.send({ type: "watch_file", file_path: filePath });
@@ -4445,7 +4369,6 @@ function detectMode() {
 function createServices() {
   return {
     documents: new DocumentService(),
-    execution: new ExecutionService(),
     collaboration: new CollaborationService()
   };
 }

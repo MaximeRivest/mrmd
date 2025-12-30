@@ -4,6 +4,11 @@
  *
  * Uses esbuild to bundle the frontend modules for production.
  *
+ * Build order:
+ * 1. Compile core/*.ts → core/*.js (individual ESM modules)
+ * 2. Bundle boot.ts → boot.js (with core modules as externals)
+ * 3. Bundle core/index.js → dist/mrmd.bundle.js
+ *
  * Usage:
  *   node build.js          # Production build
  *   node build.js --watch  # Watch mode for development
@@ -72,6 +77,42 @@ const bootConfig = {
     }
 };
 
+/**
+ * Build individual TypeScript modules in core/ to ESM JavaScript.
+ * These are NOT bundled - they remain as individual modules loaded at runtime.
+ */
+async function buildCoreModules() {
+    const coreDir = path.join(__dirname, 'core');
+    const files = fs.readdirSync(coreDir);
+    const tsFiles = files.filter(f => f.endsWith('.ts') && !f.endsWith('.d.ts'));
+
+    if (tsFiles.length === 0) {
+        console.log('No TypeScript core modules found');
+        return;
+    }
+
+    console.log(`Building ${tsFiles.length} core TypeScript module(s)...`);
+
+    await Promise.all(
+        tsFiles.map(tsFile => {
+            const inFile = path.join('core', tsFile);
+            const outFile = path.join('core', tsFile.replace(/\.ts$/, '.js'));
+
+            return esbuild.build({
+                entryPoints: [inFile],
+                outfile: outFile,
+                format: 'esm',
+                bundle: false,  // Don't bundle - keep as individual module
+                sourcemap: true,
+                target: ['es2020'],
+                logLevel: 'warning',
+            });
+        })
+    );
+
+    console.log('Core TypeScript modules built:', tsFiles.map(f => f.replace('.ts', '.js')).join(', '));
+}
+
 async function build() {
     // Ensure dist directory exists
     const distDir = path.join(__dirname, 'dist');
@@ -85,7 +126,10 @@ async function build() {
     fs.copyFileSync(cssSource, cssDest);
     console.log('Copied styles/main.css -> dist/mrmd.css');
 
-    // Build the boot entry point (service architecture)
+    // 1. Build core TypeScript modules FIRST (before boot, which has them as externals)
+    await buildCoreModules();
+
+    // 2. Build the boot entry point (service architecture)
     console.log('Building boot entry...');
     await esbuild.build(bootConfig);
     console.log('Built:', bootConfig.outfile);

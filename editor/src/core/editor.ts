@@ -1,4 +1,4 @@
-import { EditorState, Extension, EditorSelection } from '@codemirror/state';
+import { EditorState, Extension, EditorSelection, Compartment } from '@codemirror/state';
 import {
   EditorView,
   keymap,
@@ -6,7 +6,7 @@ import {
   highlightSpecialChars,
   ViewPlugin,
 } from '@codemirror/view';
-import { defaultKeymap, history, historyKeymap, undo, redo } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, undo, redo, indentWithTab } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { foldGutter, foldKeymap, foldService, foldEffect, unfoldEffect, foldedRanges, foldable } from '@codemirror/language';
@@ -40,6 +40,9 @@ export class MrmdEditor {
   private queueRef: QueueRef = { current: null };
   private filePathRef: FilePathRef = { current: null };
   private config: EditorConfig;
+
+  // Compartment for dynamic Yjs collaboration extensions (yCollab, cursors, etc.)
+  private collabCompartment = new Compartment();
 
   constructor(config: EditorConfig) {
     this.config = { ...defaultConfig, ...config };
@@ -122,7 +125,7 @@ export class MrmdEditor {
       this.getThemeExtension(),
 
       // Keymaps
-      keymap.of([...foldKeymap, ...defaultKeymap, ...historyKeymap]),
+      keymap.of([...foldKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
     ];
 
     // Change callback
@@ -193,7 +196,33 @@ export class MrmdEditor {
       extensions.push(...this.config.extensions);
     }
 
+    // Collaboration compartment (initially empty, can be reconfigured later)
+    extensions.push(this.collabCompartment.of([]));
+
     return extensions;
+  }
+
+  /**
+   * Set or update Yjs collaboration extensions dynamically.
+   * This allows adding yCollab, awareness cursors, etc. after the editor is created.
+   *
+   * @param extensions - The Yjs extensions (typically from YjsDocManager.getExtensions())
+   */
+  setCollabExtensions(extensions: Extension[]): void {
+    this.view.dispatch({
+      effects: this.collabCompartment.reconfigure(extensions),
+    });
+    console.log('[MrmdEditor] Collab extensions updated:', extensions.length, 'extensions');
+  }
+
+  /**
+   * Clear Yjs collaboration extensions (e.g., when closing a file).
+   */
+  clearCollabExtensions(): void {
+    this.view.dispatch({
+      effects: this.collabCompartment.reconfigure([]),
+    });
+    console.log('[MrmdEditor] Collab extensions cleared');
   }
 
   private getThemeExtension(): Extension {
