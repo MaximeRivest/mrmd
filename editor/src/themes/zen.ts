@@ -852,17 +852,40 @@ export const zenEditorTheme = EditorView.theme({
     height: '0 !important',
     overflow: 'hidden !important',
   },
-  // Image output anchor line - text invisible but line exists for widget anchor
-  '.cm-md-image-output-anchor-line': {
+
+  // Image output lines - same dimensions whether visible or hidden (no shift)
+  '.cm-md-image-output-line-hidden, .cm-md-image-output-line-visible': {
+    position: 'relative',
+    fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace !important",
+    fontSize: '0.85em',
+    lineHeight: '1.5',
+  },
+  // Hidden: text invisible but same space
+  '.cm-md-image-output-line-hidden': {
     color: 'transparent !important',
     userSelect: 'none',
-    position: 'relative',
   },
-  '.cm-md-image-output-anchor-line > span': {
+  '.cm-md-image-output-line-hidden > span': {
     visibility: 'hidden !important',
   },
-  '.cm-md-image-output-anchor-line::before': {
+  '.cm-md-image-output-line-hidden::before': {
     display: 'none !important',
+  },
+  // Visible: text shown for editing
+  '.cm-md-image-output-line-visible': {
+    color: 'var(--text-muted)',
+  },
+  '.cm-md-image-output-line-visible::before': {
+    content: '""',
+    position: 'absolute',
+    left: '-32px',
+    right: '-32px',
+    top: '0',
+    bottom: '0',
+    background: 'var(--surface)',
+    borderLeft: '2px solid var(--accent)',
+    zIndex: '-1',
+    pointerEvents: 'none',
   },
 
 });

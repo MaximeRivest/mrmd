@@ -21,10 +21,12 @@ plt.ylabel("sin(x)")
 plt.grid(True)
 plt.show()
 ```
+```image-output:exec-1767062130698-vj2kc
+![Figure 1](/api/file/asset/home/maxime/Projects/mrmd/.mrmd/assets/figure_0001.png)
+```
 ```output:exec-1767058956651-1swn5
 ```
-```image-output:exec-1767058956651-1swn5
-![Figure 1](/api/fweird
+
 
 do you see my messagbe? ouiiii
 
@@ -52,10 +54,11 @@ plt.title("Trigonometric Functions")
 plt.grid(True)
 plt.show()
 ```
-
-## Scatter Plot```
-```image-output:exec-1767058956651-1swn5
-![Figure 1](/api/fweird
+```output:exec-1767062223689-g9dvi
+```
+```image-output:exec-1767062223689-g9dvi
+![Figure 1](/api/file/asset/home/maxime/Projects/mrmd/.mrmd/assets/figure_0003.png)
+```
 
 do you see my messagbe? ouiiii
 
@@ -82,6 +85,11 @@ plt.legend()
 plt.title("Trigonometric Functions")
 plt.grid(True)
 plt.show()
+```
+```output:exec-1767062226684-2lzgj
+```
+```image-output:exec-1767062226684-2lzgj
+![Figure 1](/api/file/asset/home/maxime/Projects/mrmd/.mrmd/assets/figure_0004.png)
 ```
 
 ## Scatter P
@@ -101,6 +109,11 @@ plt.colorbar()
 plt.title("Random Scatter Plot")
 plt.show()
 ```
+```output:exec-1767062230337-jmghk
+```
+```image-output:exec-1767062230337-jmghk
+![Figure 1](/api/file/asset/home/maxime/Projects/mrmd/.mrmd/assets/figure_0005.png)
+```
 
 ## Bar Chart
 
@@ -115,6 +128,11 @@ plt.bar(categories, values, color='steelblue')
 plt.title("Bar Chart Example")
 plt.ylabel("Values")
 plt.show()
+```
+```output:exec-1767062320594-iwwao
+```
+```image-output:exec-1767062320594-iwwao
+![Figure 1](/api/file/asset/home/maxime/Projects/mrmd/.mrmd/assets/figure_0001.png)
 ```
 
 ```python

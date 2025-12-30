@@ -382,31 +382,16 @@ export function markdownDecorations(
                 const contentEnd = endLine.from;
                 const rawContent = view.state.sliceDoc(contentStart, contentEnd).trim();
 
-                if (cursorInBlock) {
-                  // Cursor IN block: show all lines for editing
-                  for (let i = startLine.number; i <= endLine.number; i++) {
-                    const line = view.state.doc.line(i);
-                    items.push({
-                      from: line.from,
-                      type: 'line',
-                      class: 'cm-md-image-output-block-line',
-                    });
-                  }
-                } else {
-                  // Cursor NOT in block: first line anchor (invisible text), rest hidden
+                // All lines always take same space - only text visibility changes (no shift)
+                for (let i = startLine.number; i <= endLine.number; i++) {
+                  const line = view.state.doc.line(i);
                   items.push({
-                    from: startLine.from,
+                    from: line.from,
                     type: 'line',
-                    class: 'cm-md-image-output-anchor-line',
+                    class: cursorInBlock
+                      ? 'cm-md-image-output-line-visible'   // Text visible for editing
+                      : 'cm-md-image-output-line-hidden',   // Text invisible, same height
                   });
-                  for (let i = startLine.number + 1; i <= endLine.number; i++) {
-                    const line = view.state.doc.line(i);
-                    items.push({
-                      from: line.from,
-                      type: 'line',
-                      class: 'cm-md-image-output-content-hidden',
-                    });
-                  }
                 }
 
                 // Always show image widget (stable - eq only compares src/alt/execId)
