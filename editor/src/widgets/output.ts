@@ -273,3 +273,42 @@ export function createOutputWidget(
 ): OutputWidget {
   return new OutputWidget(content, execId, config);
 }
+
+/**
+ * Widget for empty output blocks - shows subtle "No output" indicator
+ */
+export class EmptyOutputWidget extends WidgetType {
+  constructor(readonly execId: string) {
+    super();
+  }
+
+  eq(other: EmptyOutputWidget): boolean {
+    return other.execId === this.execId;
+  }
+
+  toDOM(): HTMLElement {
+    const container = document.createElement('div');
+    container.className = 'cm-empty-output-widget';
+    container.dataset.execId = this.execId;
+    container.textContent = 'No output';
+    return container;
+  }
+
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
+/**
+ * CSS styles for empty output widget
+ */
+export const emptyOutputWidgetStyles = `
+.cm-empty-output-widget {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85em;
+  color: var(--empty-output-color, rgba(255, 255, 255, 0.35));
+  padding: 4px 8px;
+  margin: 2px 0;
+  font-style: italic;
+}
+`;

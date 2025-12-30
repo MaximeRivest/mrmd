@@ -284,6 +284,22 @@ export class MrmdYjsProvider implements YjsProvider {
         break;
 
       case 'user_joined_file':
+        // Re-broadcast our awareness state so new user sees our cursor
+        if (this.awareness) {
+          const localClientId = this.awareness.clientID;
+          const awarenessUpdate = encodeAwarenessUpdate(this.awareness, [localClientId]);
+          const awarenessB64 = this.toBase64(awarenessUpdate);
+          this.send({
+            type: 'yjs_sync',
+            subtype: 'awareness',
+            payload: {
+              awareness: awarenessB64,
+            },
+          });
+          console.log('[MrmdYjsProvider] Re-broadcast awareness for new user');
+        }
+        break;
+
       case 'user_left_file':
       case 'cursor':
         // Handle presence updates (optional)

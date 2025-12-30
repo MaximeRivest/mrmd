@@ -454,9 +454,9 @@ export class MrmdEditor {
   clearAllOutputs(): void {
     const doc = this.view.state.doc.toString();
 
-    // Find all output and html-rendered blocks (supports 3+ backticks)
+    // Find all output, html-rendered, and image-output blocks (supports 3+ backticks)
     // The backreference \1 ensures closing fence matches opening length
-    const outputRegex = /\n(`{3,})(?:output|html-rendered)(?::[^\n]*)?\n[\s\S]*?\1/g;
+    const outputRegex = /\n(`{3,})(?:output|html-rendered|image-output)(?::[^\n]*)?\n[\s\S]*?\1/g;
     const changes: { from: number; to: number; insert: string }[] = [];
 
     let match;

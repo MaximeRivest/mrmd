@@ -235,9 +235,10 @@ export class ExecutionTracker {
       // Clear status from output block
       this.clearOutputStatus(execId);
 
-      // Create image-output blocks for saved image assets
+      // Create output blocks for saved assets (images, HTML, etc.)
       if (executionResult?.savedAssets) {
         let imageIndex = 0;
+        let htmlIndex = 0;
         for (const asset of executionResult.savedAssets) {
           if (asset.assetType === 'image' || asset.mimeType.startsWith('image/')) {
             imageIndex++;
@@ -245,6 +246,12 @@ export class ExecutionTracker {
             // Use a slight delay to ensure the output block is fully written
             requestAnimationFrame(() => {
               this.insertImageOutputBlock(codeBlockEnd, execId, asset.path, altText);
+            });
+          } else if (asset.assetType === 'html' || asset.mimeType === 'text/html') {
+            htmlIndex++;
+            // Create an html-rendered block with an iframe for HTML output
+            requestAnimationFrame(() => {
+              this.insertHtmlOutputBlock(codeBlockEnd, execId, asset.path);
             });
           }
         }
@@ -327,7 +334,7 @@ export class ExecutionTracker {
       this.ensureOutputNewline(execId);
       requestAnimationFrame(() => this.ensureOutputNewline(execId));
 
-      // Create image-output blocks for saved image assets
+      // Create output blocks for saved assets (images, HTML, etc.)
       if (executionResult?.savedAssets) {
         let imageIndex = 0;
         for (const asset of executionResult.savedAssets) {
@@ -336,6 +343,11 @@ export class ExecutionTracker {
             const altText = `Figure ${imageIndex}`;
             requestAnimationFrame(() => {
               this.insertImageOutputBlock(codeBlockEnd, execId, asset.path, altText);
+            });
+          } else if (asset.assetType === 'html' || asset.mimeType === 'text/html') {
+            // Create an html-rendered block with an iframe for HTML output
+            requestAnimationFrame(() => {
+              this.insertHtmlOutputBlock(codeBlockEnd, execId, asset.path);
             });
           }
         }
@@ -460,7 +472,7 @@ export class ExecutionTracker {
     const state = this.view.state;
     const afterText = state.doc.sliceString(
       codeBlockEnd,
-      Math.min(codeBlockEnd + 100, state.doc.length)
+      Math.min(codeBlockEnd + 500, state.doc.length)
     );
 
     const statusLine = status ? `${status}\n` : '';
@@ -469,7 +481,7 @@ export class ExecutionTracker {
     const existingOutput = afterText.match(/^\n(`{3,})output(?::[^\n]*)?\n/);
 
     if (existingOutput) {
-      // Replace existing output block
+      // Replace existing output block AND clean up associated image-output blocks
       const outputStart = codeBlockEnd + 1;
       const restOfDoc = state.doc.sliceString(outputStart, state.doc.length);
       const backticks = existingOutput[1]; // Captured backtick sequence
@@ -477,9 +489,21 @@ export class ExecutionTracker {
       const outputMatch = restOfDoc.match(outputRegex);
 
       if (outputMatch) {
+        // Find the end of the output block
+        let deleteEnd = outputStart + outputMatch[0].length;
+
+        // Check for and remove any trailing image-output blocks
+        const afterOutput = state.doc.sliceString(deleteEnd, deleteEnd + 500);
+        const imageOutputPattern = /^(\n```image-output:[^\n]*\n[\s\S]*?```)+/;
+        const imageOutputMatch = afterOutput.match(imageOutputPattern);
+
+        if (imageOutputMatch) {
+          deleteEnd += imageOutputMatch[0].length;
+        }
+
         this.dispatchChange({
           from: outputStart,
-          to: outputStart + outputMatch[0].length,
+          to: deleteEnd,
           insert: `\`\`\`output:${execId}\n${statusLine}\`\`\``,
         });
         return;
@@ -502,7 +526,9 @@ export class ExecutionTracker {
    * @param alt Alt text for the image
    */
   insertImageOutputBlock(afterPos: number, execId: string, imagePath: string, alt: string = 'output'): void {
-    const imageMarkdown = createImageMarkdown(imagePath, alt);
+    // Convert absolute path to asset API URL for browser access
+    const assetUrl = `/api/file/asset${imagePath}`;
+    const imageMarkdown = createImageMarkdown(assetUrl, alt);
     const state = this.view.state;
 
     // Find the position after the output block (after its closing ```)
@@ -542,6 +568,71 @@ export class ExecutionTracker {
     this.dispatchChange({
       from: insertPos,
       insert: `\n\`\`\`image-output:${execId}\n${imageMarkdown}\n\`\`\``,
+    });
+  }
+
+  /**
+   * Insert an html-rendered block with an iframe for HTML output
+   * Used for display(HTML(...)), Plotly, etc.
+   * @param afterPos Position to insert after (typically end of output block)
+   * @param execId Execution ID for linking
+   * @param htmlPath Path to the HTML file
+   */
+  insertHtmlOutputBlock(afterPos: number, execId: string, htmlPath: string): void {
+    const state = this.view.state;
+
+    // Find the position after the output block (after its closing ```)
+    const doc = state.doc.toString();
+    const outputMarker = `\`\`\`output:${execId}`;
+    const outputPos = doc.indexOf(outputMarker);
+
+    let insertPos = afterPos;
+
+    if (outputPos !== -1) {
+      // Find the closing ``` of the output block
+      const afterOutput = doc.slice(outputPos);
+      const closeMatch = afterOutput.match(/```[\s\S]*?```/);
+      if (closeMatch) {
+        insertPos = outputPos + closeMatch[0].length;
+      }
+    }
+
+    // Also skip past any image-output blocks
+    const imageOutputMarker = `\`\`\`image-output:${execId}`;
+    const imageOutputPos = doc.indexOf(imageOutputMarker);
+    if (imageOutputPos !== -1 && imageOutputPos >= insertPos) {
+      const afterImage = doc.slice(imageOutputPos);
+      const closeMatch = afterImage.match(/```image-output:[^\n]*\n[\s\S]*?```/);
+      if (closeMatch) {
+        insertPos = imageOutputPos + closeMatch[0].length;
+      }
+    }
+
+    // Create HTML content with an iframe pointing to the HTML file via the asset API
+    // The server serves files at /api/file/asset/{absolute-path}
+    const assetUrl = `/api/file/asset${htmlPath}`;
+    const iframeHtml = `<iframe src="${assetUrl}" style="width:100%;height:600px;border:none;background:white;border-radius:4px;"></iframe>`;
+
+    // Check if there's already an html-rendered block for this execId
+    const existingHtmlBlock = doc.indexOf(`\`\`\`html-rendered:${execId}`);
+    if (existingHtmlBlock !== -1) {
+      // Replace existing html-rendered block
+      const restOfDoc = doc.slice(existingHtmlBlock);
+      const blockMatch = restOfDoc.match(/^```html-rendered:[^\n]*\n[\s\S]*?```/);
+      if (blockMatch) {
+        this.dispatchChange({
+          from: existingHtmlBlock,
+          to: existingHtmlBlock + blockMatch[0].length,
+          insert: `\`\`\`html-rendered:${execId}\n${iframeHtml}\n\`\`\``,
+        });
+        return;
+      }
+    }
+
+    // Insert new html-rendered block
+    this.dispatchChange({
+      from: insertPos,
+      insert: `\n\`\`\`html-rendered:${execId}\n${iframeHtml}\n\`\`\``,
     });
   }
 

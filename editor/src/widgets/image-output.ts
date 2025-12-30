@@ -20,10 +20,17 @@ export interface ImageOutputWidgetConfig {
   maxWidth?: string;
   /** Whether to show loading state */
   showLoading?: boolean;
+  /** Whether cursor is in the block (for edit overlay) */
+  isEditing?: boolean;
+  /** Raw markdown content to show in edit overlay */
+  rawContent?: string;
 }
 
 /**
  * Widget for rendering image output blocks
+ *
+ * Design: Stable widget that doesn't recreate on focus changes.
+ * The image loads once and stays loaded. Edit overlay shown when cursor is in block.
  */
 export class ImageOutputWidget extends WidgetType {
   constructor(

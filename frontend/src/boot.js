@@ -1787,6 +1787,7 @@ async function openFile(path, options = {}) {
     externalChangeManager?.registerFile(path, file.content);
     if (services.collaboration.isConnected) {
       services.collaboration.watchFile(path);
+      services.collaboration.joinFile(path);
     }
     const filename = path.split("/").pop() || path;
     fileTabs?.addTab(path, filename, false);

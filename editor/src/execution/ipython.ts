@@ -187,18 +187,43 @@ export class IPythonExecutor implements Executor {
     }
 
     // Convert display_data from IPython format
+    // Server sends two formats:
+    // 1. Asset references: {"asset": {"path": "...", "mime_type": "...", "type": "..."}}
+    // 2. Inline data: {"data": {"mime/type": "..."}, "metadata": {...}}
     const displayData: DisplayData[] = [];
+    const savedAssets: SavedAsset[] = [];
+
     if (result.display_data) {
-      for (const data of result.display_data) {
-        // IPython sends { "mime/type": "data" } objects
-        for (const [mimeType, content] of Object.entries(data)) {
-          displayData.push({ mimeType, data: content });
+      for (const item of result.display_data) {
+        // Check for asset reference format (matplotlib figures, plotly, etc.)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const assetItem = item as any;
+        if (assetItem.asset) {
+          const asset = assetItem.asset;
+          savedAssets.push({
+            path: asset.path,
+            mimeType: asset.mime_type,
+            assetType: (asset.type || 'image') as 'image' | 'svg' | 'html',
+          });
+        }
+        // Check for inline data format
+        else if (assetItem.data) {
+          for (const [mimeType, content] of Object.entries(assetItem.data)) {
+            displayData.push({ mimeType, data: content as string });
+          }
+        }
+        // Legacy format: direct { "mime/type": "data" } objects
+        else {
+          for (const [mimeType, content] of Object.entries(assetItem)) {
+            if (mimeType !== 'metadata') {
+              displayData.push({ mimeType, data: content as string });
+            }
+          }
         }
       }
     }
 
-    // Convert saved_assets from IPython format
-    const savedAssets: SavedAsset[] = [];
+    // Also check saved_assets field (in case server sends it separately)
     if (result.saved_assets) {
       for (const asset of result.saved_assets) {
         savedAssets.push({

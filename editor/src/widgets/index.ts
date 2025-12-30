@@ -15,8 +15,10 @@ export {
 } from './html';
 export {
   OutputWidget,
+  EmptyOutputWidget,
   createOutputWidget,
   outputWidgetStyles,
+  emptyOutputWidgetStyles,
   type OutputWidgetConfig,
 } from './output';
 export {

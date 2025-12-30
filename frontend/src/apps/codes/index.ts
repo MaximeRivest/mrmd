@@ -2262,9 +2262,10 @@ async function openFile(path: string, options: { background?: boolean; cachedCon
         // This tracks lastKnownContent for conflict detection
         externalChangeManager?.registerFile(path, file.content);
 
-        // Watch for external changes to this file
+        // Watch for external changes to this file and join for real-time collab
         if (services.collaboration.isConnected) {
             services.collaboration.watchFile(path);
+            services.collaboration.joinFile(path);  // Enable Yjs sync and cursor sharing
         }
 
         const filename = path.split('/').pop() || path;

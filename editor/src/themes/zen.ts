@@ -493,6 +493,30 @@ export const zenEditorTheme = EditorView.theme({
     overflow: 'hidden !important',
   },
 
+  // Empty output line - hide text but keep line height for no flicker
+  '.cm-md-output-empty-line': {
+    color: 'transparent !important',
+    userSelect: 'none',
+    position: 'relative',
+  },
+  '.cm-md-output-empty-line > span': {
+    visibility: 'hidden !important',
+  },
+  '.cm-md-output-empty-line::before': {
+    display: 'none !important',
+  },
+
+  // Empty output widget - absolute positioned to not affect layout
+  '.cm-empty-output-widget': {
+    position: 'absolute',
+    left: '0',
+    fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
+    fontSize: '0.8em',
+    color: 'var(--text-muted)',
+    opacity: '0.5',
+    fontStyle: 'italic',
+  },
+
   // HTML cell placeholder (collapsed source)
   '.cm-html-cell-placeholder': {
     display: 'inline-flex',
@@ -828,6 +852,19 @@ export const zenEditorTheme = EditorView.theme({
     height: '0 !important',
     overflow: 'hidden !important',
   },
+  // Image output anchor line - text invisible but line exists for widget anchor
+  '.cm-md-image-output-anchor-line': {
+    color: 'transparent !important',
+    userSelect: 'none',
+    position: 'relative',
+  },
+  '.cm-md-image-output-anchor-line > span': {
+    visibility: 'hidden !important',
+  },
+  '.cm-md-image-output-anchor-line::before': {
+    display: 'none !important',
+  },
+
 });
 
 /**
