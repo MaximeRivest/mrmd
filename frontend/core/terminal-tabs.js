@@ -23,6 +23,38 @@ import {
 import { escapeHtml } from './utils.js';
 
 /**
+ * Calculate optimal font size for a terminal container.
+ * xterm.js FitAddon adjusts cols/rows but not font size.
+ * This calculates font size to achieve a target column count.
+ *
+ * @param {HTMLElement} container - Terminal container
+ * @param {Object} options - Sizing options
+ * @param {number} options.minCols - Minimum columns to display (default: 40)
+ * @param {number} options.minFontSize - Minimum font size (default: 9)
+ * @param {number} options.maxFontSize - Maximum font size (default: 14)
+ * @param {number} options.charWidthRatio - Char width / font size ratio (default: 0.6)
+ * @returns {number} Optimal font size
+ */
+function calculateFontSize(container, options = {}) {
+    const {
+        minCols = 40,
+        minFontSize = 9,
+        maxFontSize = 14,
+        charWidthRatio = 0.6,
+    } = options;
+
+    const width = container.offsetWidth || container.clientWidth || 300;
+
+    // Calculate font size that would give us minCols
+    // width = cols * fontSize * charWidthRatio
+    // fontSize = width / (cols * charWidthRatio)
+    const computed = width / (minCols * charWidthRatio);
+
+    // Clamp to min/max bounds
+    return Math.max(minFontSize, Math.min(maxFontSize, Math.round(computed)));
+}
+
+/**
  * Get terminal theme based on system color scheme preference.
  */
 function getTerminalTheme() {
@@ -164,6 +196,16 @@ export function createTerminalTabs(container, options = {}) {
     function fitAndResize(entry, force = false) {
         if (!entry || !entry.terminal || !entry.fitAddon) return;
 
+        // Recalculate font size based on container dimensions
+        const newFontSize = calculateFontSize(entry.container, {
+            minCols: 60,
+            minFontSize: 9,
+            maxFontSize: 14,
+        });
+        if (entry.terminal.options.fontSize !== newFontSize) {
+            entry.terminal.options.fontSize = newFontSize;
+        }
+
         const oldCols = entry.terminal.cols;
         const oldRows = entry.terminal.rows;
 
@@ -293,10 +335,17 @@ export function createTerminalTabs(container, options = {}) {
         termContainer.dataset.session = sessionId;
         state.contentArea.appendChild(termContainer);
 
+        // Calculate responsive font size based on container
+        const initialFontSize = calculateFontSize(state.contentArea, {
+            minCols: 60,      // Target reasonable width for terminal output
+            minFontSize: 9,
+            maxFontSize: 14,
+        });
+
         // Create terminal with optimized settings
         const terminal = new window.Terminal({
             cursorBlink: true,
-            fontSize: 13,
+            fontSize: initialFontSize,
             fontFamily: '"SF Mono", "Fira Code", "Monaco", "Inconsolata", monospace',
             // Scroll settings
             scrollback: 10000,

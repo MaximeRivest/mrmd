@@ -129,6 +129,11 @@ def setup_http_routes(app: web.Application, ai_port: int = 51790):
 
     # Project detection
     app.router.add_post("/api/project/detect", handle_project_detect)
+    app.router.add_get("/api/project/status", handle_project_status)
+
+    # Project environment setup (auto-setup)
+    app.router.add_post("/api/project/setup-venv", handle_project_setup_venv)
+    app.router.add_post("/api/project/install-deps", handle_project_install_deps)
 
     # Environment management
     app.router.add_post("/api/environments/list", handle_environments_list)
@@ -169,6 +174,7 @@ def setup_http_routes(app: web.Application, ai_port: int = 51790):
     app.router.add_post("/api/project/switch", handle_project_switch)
     app.router.add_post("/api/project/warm", handle_project_warm)
     app.router.add_get("/api/project/pool/status", handle_project_pool_status)
+    app.router.add_post("/api/project/session-id", handle_project_session_id)
 
     # Welcome content
     app.router.add_get("/api/mrmd/welcome", handle_mrmd_welcome)
@@ -1342,6 +1348,103 @@ async def handle_project_detect(request: web.Request) -> web.Response:
             "environments": environments,
             "file_path": str(Path(file_path).resolve()),
         })
+
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_project_status(request: web.Request) -> web.Response:
+    """Get environment status for a project directory.
+
+    Query params:
+        path: Project directory path (required)
+
+    Returns:
+        has_venv: Whether a virtual environment exists
+        has_deps: Whether a dependencies file exists (pyproject.toml or requirements.txt)
+        deps_file: The dependencies file name if found
+        kernel_ready: Whether the kernel is configured for this project
+        environments: List of detected Python environments
+    """
+    try:
+        project_path = request.query.get("path")
+
+        if not project_path:
+            return web.json_response({"error": "path query param required"}, status=400)
+
+        project_path = str(Path(project_path).resolve())
+
+        # Check for venv
+        root = Path(project_path)
+        venv_paths = [root / ".venv", root / "venv"]
+        has_venv = any(p.exists() and p.is_dir() for p in venv_paths)
+
+        # Check for dependency files
+        has_deps = False
+        deps_file = None
+        if (root / "pyproject.toml").exists():
+            has_deps = True
+            deps_file = "pyproject.toml"
+        elif (root / "requirements.txt").exists():
+            has_deps = True
+            deps_file = "requirements.txt"
+
+        # Detect all Python environments
+        environments = detect_python_environments(project_path)
+
+        # Note: kernel_ready state is tracked client-side via ProjectStatus service
+        # This endpoint provides the static filesystem state
+
+        return web.json_response({
+            "has_venv": has_venv,
+            "has_deps": has_deps,
+            "deps_file": deps_file,
+            "environments": environments,
+            "project_path": project_path,
+            "needs_setup": has_deps and not has_venv,
+        })
+
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_project_setup_venv(request: web.Request) -> web.Response:
+    """Create a venv in a project directory.
+
+    Request body:
+        path: Project directory path (required)
+    """
+    try:
+        data = await request.json()
+        project_path = data.get("path")
+
+        if not project_path:
+            return web.json_response({"error": "path required"}, status=400)
+
+        result = environment.setup_project_venv(project_path)
+        return web.json_response(result)
+
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_project_install_deps(request: web.Request) -> web.Response:
+    """Install dependencies from pyproject.toml or requirements.txt.
+
+    Request body:
+        path: Project directory path (required)
+        deps_file: Dependencies file name (default: "pyproject.toml")
+    """
+    try:
+        data = await request.json()
+        project_path = data.get("path")
+        deps_file = data.get("deps_file", "pyproject.toml")
+
+        if not project_path:
+            return web.json_response({"error": "path required"}, status=400)
+
+        result = environment.install_project_dependencies(project_path, deps_file)
+        return web.json_response(result)
 
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
@@ -3089,6 +3192,37 @@ async def handle_project_pool_status(request: web.Request) -> web.Response:
     """Get project pool status (for debugging)."""
     pool = get_project_pool()
     return web.json_response(pool.get_status())
+
+
+async def handle_project_session_id(request: web.Request) -> web.Response:
+    """
+    Get the deterministic session ID for a project path.
+
+    This ensures frontend and server agree on session IDs,
+    enabling proper pool reuse.
+
+    Request: { path: "/path/to/project" }
+    Response: { session_id: "project_a7ffa64c", path: "/path/to/project" }
+    """
+    try:
+        data = await request.json()
+        project_path = data.get("path")
+
+        if not project_path:
+            return web.json_response({"error": "path required"}, status=400)
+
+        # Use the same hash function as project_pool.py
+        import hashlib
+        hash_str = hashlib.md5(project_path.encode()).hexdigest()[:8]
+        session_id = f"project_{hash_str}"
+
+        return web.json_response({
+            "session_id": session_id,
+            "path": project_path,
+        })
+
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
 
 
 async def handle_mrmd_welcome(request: web.Request) -> web.Response:

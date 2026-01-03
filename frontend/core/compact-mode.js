@@ -7,20 +7,20 @@
 import * as SessionState from './session-state.js';
 import { initModeController, toggleMode } from './mode-controller.js';
 import * as CompactHeader from './compact-header.js';
+import * as ProjectStatus from './project-status.js';
 import * as FileNavigator from './file-navigator.js';
 import * as ToolRail from './tool-rail.js';
 import * as ToolPanel from './tool-panel.js';
 // FormattingPanel removed - replaced by selection-triggered floating toolbar (selection-toolbar.js)
 import * as AIPanel from './ai-panel.js';
 import * as TerminalOverlay from './terminal-overlay.js';
-import * as MobileNav from './mobile-nav.js';
 import * as CompactStatus from './compact-status.js';
 import * as DeveloperStatus from './developer-status.js';
 import * as HomeScreen from './home-screen.js';
 import * as QuickPicker from './quick-picker.js';
 import * as ClaudePanel from './claude-panel.js';
 import * as PortalScreen from './portal-screen.js';
-import * as ProjectExplorer from './project-explorer.js';
+// ProjectExplorer removed - functionality merged into QuickPicker browse mode
 import * as TOCPanel from './toc-panel.js';
 import * as InlineTOC from './inline-toc.js';
 import { KeybindingManager } from './keybinding-manager.js';
@@ -111,14 +111,43 @@ export function initCompactMode(options = {}) {
         }
     });
 
+    // Initialize project status service
+    ProjectStatus.init();
+
     // Create compact header
     const headerEl = CompactHeader.createCompactHeader({
         onExit: () => {
-            // Show home screen instead of file navigator
-            HomeScreen.show();
+            try {
+                console.log('[CompactMode] Exit button clicked');
+                // Check if current file is untitled before showing home screen
+                const currentPath = SessionState.getActiveFilePath();
+                const isUntitled = currentPath ? SessionState.isUntitledFile(currentPath) : false;
+                console.log('[CompactMode] Current path:', currentPath, 'isUntitled:', isUntitled);
+                if (currentPath && isUntitled) {
+                    // Emit event to trigger save picker via codes/index.ts
+                    // This ensures proper handling of recent notebooks, tabs, etc.
+                    console.log('[CompactMode] Emitting untitled-file-exit-requested');
+                    SessionState.emit('untitled-file-exit-requested', {
+                        path: currentPath,
+                        showHomeAfter: true,
+                    });
+                } else {
+                    // Normal file or no file - just show home screen
+                    console.log('[CompactMode] Showing home screen');
+                    HomeScreen.show();
+                }
+            } catch (err) {
+                console.error('[CompactMode] Error in onExit:', err);
+                // Fallback to showing home screen
+                HomeScreen.show();
+            }
         },
         onMenu: () => {
             ToolRail.toggle();
+        },
+        onProjectClick: () => {
+            // Open picker in browse mode to switch projects
+            QuickPicker.open({ mode: 'browse', context: 'home' });
         }
     });
 
@@ -333,6 +362,8 @@ export function initCompactMode(options = {}) {
                     TerminalOverlay.toggle();
                 } else if (tool.id === 'toc') {
                     // Use inline TOC instead of panel (Jony's vision)
+                    // Update editor reference before toggling (editor may not be ready at init)
+                    InlineTOC.setEditor(getEditorFn());
                     InlineTOC.toggle();
                     // Don't highlight the button since it's not a persistent panel
                     ToolRail.setActivePanel(null);
@@ -345,16 +376,13 @@ export function initCompactMode(options = {}) {
         },
         onStateToggle: (toggleId, isActive) => {
             // Handle state toggle changes
+            const editor = getEditorFn();
             if (toggleId === 'source') {
-                // Toggle source/rendered view mode
-                if (editorRef) {
-                    editorRef.setViewMode(isActive ? 'source' : 'rendered');
-                }
+                // Toggle raw/rendered view mode
+                editor?.setRawMode?.(isActive);
             } else if (toggleId === 'whitespace') {
                 // Toggle whitespace visibility
-                if (editorRef) {
-                    editorRef.setShowWhitespace(isActive);
-                }
+                editor?.setShowWhitespace?.(isActive);
             }
         },
         onClose: () => {
@@ -367,29 +395,6 @@ export function initCompactMode(options = {}) {
     // Create terminal overlay
     const terminalEl = TerminalOverlay.createTerminalOverlay({
         createTerminal
-    });
-
-    // Create mobile navigation
-    const mobileNavEl = MobileNav.createMobileNav({
-        onItemClick: (item) => {
-            if (!item) return;
-
-            switch (item.id) {
-                case 'files':
-                    FileNavigator.toggle();
-                    break;
-                case 'ai':
-                case 'code':
-                    ToolPanel.toggle(item.id);
-                    break;
-                case 'run':
-                    SessionState.emit('run-requested', {});
-                    break;
-                case 'more':
-                    ToolPanel.toggle('more');
-                    break;
-            }
-        }
     });
 
     // Create compact status bar
@@ -412,7 +417,6 @@ export function initCompactMode(options = {}) {
     container.appendChild(backdropEl);
     container.appendChild(panelEl);
     container.appendChild(terminalEl);
-    container.appendChild(mobileNavEl);
     container.appendChild(quickPickerEl);
     container.appendChild(claudePanelEl);
 
@@ -466,30 +470,68 @@ function initKeybindings(getEditor) {
         initEditorKeybindings({ getEditor, statusEl });
     }
 
-    // Handler for project explorer toggle
-    const toggleProjectExplorer = () => {
+    // Handler for universal picker (⌘P)
+    const openPicker = () => {
         // Only handle when in compact mode
         if (SessionState.getInterfaceMode() !== 'compact') return;
 
-        const currentProject = SessionState.getCurrentProject();
-        if (currentProject) {
-            if (ProjectExplorer.isShown()) {
-                ProjectExplorer.close();
-            } else {
-                ProjectExplorer.open(currentProject.path, currentProject.name);
-            }
+        if (QuickPicker.isVisible()) {
+            QuickPicker.close();
         } else {
-            HomeScreen.show();
+            // Determine context: 'home' if on home screen, 'project' otherwise
+            const isOnHome = HomeScreen.isShown();
+            const context = isOnHome || !SessionState.getCurrentProject() ? 'home' : 'project';
+            QuickPicker.open({
+                mode: 'files',
+                context,
+                onCreate: handleFileCreate,
+            });
         }
     };
 
-    // Register handlers for navigation keybindings
-    KeybindingManager.handle('nav:project-explorer', toggleProjectExplorer);
-    KeybindingManager.handle('nav:project-explorer-alt', toggleProjectExplorer);
+    // Handler for file creation from picker
+    const handleFileCreate = async (path) => {
+        // Create the file with initial content
+        const filename = path.split('/').pop();
+        const nameWithoutExt = filename.replace(/\.[^.]+$/, '');
+        const initialContent = `# ${nameWithoutExt}\n\n`;
+
+        try {
+            // Ensure parent directory exists
+            const dir = path.substring(0, path.lastIndexOf('/'));
+            await fetch('/api/file/mkdir', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: dir })
+            });
+
+            // Create the file
+            await fetch('/api/file/write', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path, content: initialContent })
+            });
+
+            // Open the file
+            SessionState.emit('file-switch-requested', { path });
+
+            // Hide home screen if visible
+            if (HomeScreen.isShown()) {
+                HomeScreen.hide();
+            }
+        } catch (err) {
+            console.error('[CompactMode] Failed to create file:', err);
+        }
+    };
+
+    // Register handler for nav:picker (replaces nav:project-explorer)
+    KeybindingManager.handle('nav:picker', openPicker);
 
     // Toggle inline TOC
     KeybindingManager.handle('nav:toggle-toc', () => {
         if (SessionState.getInterfaceMode() !== 'compact') return;
+        // Update editor reference before toggling (editor may not be ready at init)
+        InlineTOC.setEditor(getEditor());
         InlineTOC.toggle();
     });
 }
@@ -782,8 +824,7 @@ export function isInitialized() {
  */
 export function destroyCompactMode() {
     // Unregister keybinding handlers
-    KeybindingManager.unhandle('nav:project-explorer');
-    KeybindingManager.unhandle('nav:project-explorer-alt');
+    KeybindingManager.unhandle('nav:picker');
     KeybindingManager.unhandle('nav:toggle-toc');
     KeybindingManager.unregisterContext('editor');
     KeybindingManager.unregisterContext('compact-mode');
@@ -795,7 +836,6 @@ export function destroyCompactMode() {
     ToolRail.destroy?.();
     ToolPanel.destroy?.();
     TerminalOverlay.destroy?.();
-    MobileNav.destroy?.();
     CompactStatus.destroy?.();
     DeveloperStatus.destroyDeveloperStatus?.();
     QuickPicker.destroy?.();

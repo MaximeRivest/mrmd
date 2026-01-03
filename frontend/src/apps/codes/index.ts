@@ -66,6 +66,10 @@ import { toggleMode, HomeScreen } from '/core/compact-mode.js';
 import { initSelectionToolbar } from '/core/selection-toolbar.js';
 // @ts-ignore
 import * as VariablesPanel from '/core/variables-panel.js';
+// @ts-ignore
+import * as QuickPicker from '/core/quick-picker.js';
+// @ts-ignore
+import * as ProjectStatus from '/core/project-status.js';
 
 // Interface mode management
 import { InterfaceManager, createInterfaceManager } from './InterfaceManager';
@@ -1642,12 +1646,19 @@ function initEditor(): void {
 
         onChange: (doc: string) => {
             if (!silentUpdate) {
-                rawTextarea.value = doc;
-                const currentPath = appState.currentFilePath;
-                if (currentPath) {
-                    appState.updateFileContent(currentPath, doc, true);
-                    scheduleAutosave();
-                    updateFileIndicator();
+                // CRITICAL: Use the editor's file path, not appState.currentFilePath
+                // This prevents race conditions when switching files rapidly.
+                // A stale change event from file A should update file A's content,
+                // not file B's content (which is now in appState.currentFilePath).
+                const editorFilePath = editor?.getFilePath();
+                if (editorFilePath && appState.openFiles.has(editorFilePath)) {
+                    rawTextarea.value = doc;
+                    appState.updateFileContent(editorFilePath, doc, true);
+                    // Only schedule autosave and update UI if this is the currently displayed file
+                    if (appState.currentFilePath === editorFilePath) {
+                        scheduleAutosave();
+                        updateFileIndicator();
+                    }
                 }
             }
         },
@@ -1699,6 +1710,42 @@ function initEditor(): void {
                 editor.applyExternalChange(newContent, origin);
             },
             getContent: () => editor.getDoc(),
+        });
+
+        // Set up beforeExecute callback for project mismatch detection
+        // This intercepts code execution to check if the file's project matches the kernel's project
+        editor.tracker.setBeforeExecuteCallback(async ({ filePath }) => {
+            // Check if there's a project mismatch
+            const mismatchInfo = SessionState.getProjectMismatchInfo();
+            if (!mismatchInfo.isMismatch) {
+                return { proceed: true };
+            }
+
+            // Show mismatch dialog and wait for user response
+            const userChoice = await showProjectMismatchDialog(
+                mismatchInfo.viewedProject || 'Unknown',
+                mismatchInfo.activeProject || 'Unknown'
+            );
+
+            if (userChoice === 'switch') {
+                // User wants to switch to the file's project
+                console.log(`[Codes] User chose to switch to ${mismatchInfo.viewedProject}`);
+                const result = await SessionState.switchToViewedProject();
+                if (result.success) {
+                    // Project switched - proceed with execution
+                    return { proceed: true };
+                } else {
+                    showNotification('Error', 'Failed to switch project', 'error');
+                    return { proceed: false, message: 'Project switch failed' };
+                }
+            } else if (userChoice === 'continue') {
+                // User wants to run in current project anyway
+                console.log(`[Codes] User chose to continue with ${mismatchInfo.activeProject}`);
+                return { proceed: true };
+            } else {
+                // User cancelled
+                return { proceed: false, message: 'Cancelled by user' };
+            }
         });
     }
 
@@ -1823,8 +1870,14 @@ async function setupYjsForFile(filePath: string): Promise<string> {
     const content = currentYjsDoc.getContent();
     console.log('[Yjs] Sync complete, content length:', content.length);
 
+    // CRITICAL: Set editor content to synced content BEFORE adding yCollab.
+    // If we add yCollab while editor has different content, it will try to
+    // merge the editor content with Y.Text, causing content duplication.
+    // We use setDoc directly to avoid triggering onChange handlers.
+    editor.setDoc(content);
+
     // Add Yjs extensions to the editor (yCollab for cursors, undo manager, etc.)
-    // This must be done AFTER sync is complete so the Y.Text is ready
+    // This must be done AFTER both sync AND editor content update so they match.
     editor.setCollabExtensions(currentYjsDoc.getExtensions());
 
     // Observe Yjs changes with origin tracking
@@ -2007,6 +2060,29 @@ async function initUIModules(): Promise<void> {
     // Mode toggle (compact mode) - button handler only
     // Actual mode management is handled by InterfaceManager
     initModeToggle();
+
+    // File indicator click handler (opens save picker)
+    initFileIndicatorClick();
+}
+
+/**
+ * Initialize click handler for the filename indicator
+ * Clicking the filename opens the save picker for move/rename
+ */
+function initFileIndicatorClick(): void {
+    const indicator = document.querySelector('.current-file-indicator');
+    const nameEl = indicator?.querySelector('.file-name') as HTMLElement | null;
+
+    if (nameEl) {
+        nameEl.style.cursor = 'pointer';
+        nameEl.title = 'Click to rename or move file';
+        nameEl.addEventListener('click', () => {
+            const currentPath = appState.currentFilePath;
+            if (currentPath) {
+                openSavePickerForFile(currentPath, { copyMode: false, closeAfter: false });
+            }
+        });
+    }
 }
 
 // ============================================================================
@@ -2200,6 +2276,7 @@ async function initCollaboration(): Promise<void> {
 // ============================================================================
 
 function setupEventHandlers(): void {
+    console.log('[Codes] setupEventHandlers starting');
     SessionState.on('file-modified', (path: string) => {
         fileTabs?.updateTabModified(path, true);
     });
@@ -2241,9 +2318,16 @@ function setupEventHandlers(): void {
         execStatusEl.classList.add('kernel-switching');
     });
 
-    SessionState.on('kernel-ready', () => {
+    SessionState.on('kernel-ready', ({ session, venv }: { session: string; venv: string | null }) => {
         execStatusEl.textContent = 'ready';
         execStatusEl.classList.remove('kernel-switching');
+
+        // CRITICAL: Sync IPython client's session ID with the new kernel session
+        // Without this, code execution would still go to the old session
+        if (session && ipython) {
+            console.log(`[Codes] Kernel ready - syncing IPython client to session: ${session}`);
+            ipython.setSession(session);
+        }
     });
 
     SessionState.on('kernel-error', ({ error }: { error: string }) => {
@@ -2270,6 +2354,10 @@ function setupEventHandlers(): void {
         try {
             await openFile(path);
             editor?.focus();
+
+            // Track file's project and trigger auto-setup if needed
+            // This runs async in the background
+            ProjectStatus.handleFileOpened(path);
         } catch (err) {
             console.error('[Codes] Failed to open file:', err);
             showNotification('Error', `Failed to open file: ${err}`, 'error');
@@ -2320,6 +2408,19 @@ function setupEventHandlers(): void {
         }
     });
 
+    // Handle untitled file exit from compact mode X button
+    console.log('[Codes] Registering untitled-file-exit-requested listener');
+    SessionState.on('untitled-file-exit-requested', ({ path, showHomeAfter }: { path: string; showHomeAfter?: boolean }) => {
+        console.log('[Codes] Untitled file exit requested:', path);
+        openSavePickerForFile(path, {
+            copyMode: false,
+            closeAfter: true,
+        });
+        // Note: HomeScreen.show() will be called after the file is saved/discarded
+        // via the existing handleSavePickerComplete flow
+    });
+    console.log('[Codes] Registered untitled-file-exit-requested listener');
+
     window.addEventListener('focus', () => {
         if (!services.collaboration.isConnected) {
             setTimeout(checkFileChanges, 100);
@@ -2341,7 +2442,23 @@ function setupKeyboardShortcuts(): void {
 
     // File save (Ctrl+S)
     KeybindingManager.handle('file:save', () => {
-        saveFile();
+        const currentPath = appState.currentFilePath;
+
+        if (currentPath && SessionState.isUntitledFile(currentPath)) {
+            // Untitled file - show save picker
+            openSavePickerForFile(currentPath, { copyMode: false, closeAfter: false });
+        } else {
+            // Normal save
+            saveFile();
+        }
+    });
+
+    // File save-as (Ctrl+Shift+S)
+    KeybindingManager.handle('file:save-as', () => {
+        const currentPath = appState.currentFilePath;
+        if (currentPath) {
+            openSavePickerForFile(currentPath, { copyMode: true, closeAfter: false });
+        }
     });
 }
 
@@ -2403,6 +2520,23 @@ async function openFile(path: string, options: { background?: boolean; cachedCon
         const filename = path.split('/').pop() || path;
         const isMarkdown = path.endsWith('.md');
         const shouldUseCollab = useCollaboration && isMarkdown && services.collaboration.isConnected;
+
+        // Track file's project for mismatch detection (but DON'T auto-switch)
+        // Mismatch is checked at code execution time, allowing cross-project viewing
+        if (isMarkdown && !options.background) {
+            const currentProject = SessionState.getCurrentProject();
+            const fileDirPath = path.substring(0, path.lastIndexOf('/'));
+            const detectedProject = await detectProjectForPath(fileDirPath);
+
+            if (detectedProject && detectedProject.path !== currentProject?.path) {
+                console.log(`[Codes] File is from different project: ${detectedProject.name} (current: ${currentProject?.name || 'none'})`);
+                // Store mismatch info for execution-time checking
+                // The execution handler will prompt user if they try to run code
+                SessionState.setViewedFileProject(path, detectedProject.path, detectedProject.name);
+            } else {
+                SessionState.setViewedFileProject(path, currentProject?.path || null, currentProject?.name || null);
+            }
+        }
 
         // ALWAYS read disk content first as safety baseline
         // This is used to prevent data loss if Yjs syncs with empty content
@@ -2745,6 +2879,184 @@ async function doAutosaveForFile(filePath: string): Promise<void> {
     }
 }
 
+// ============================================================================
+// Save Picker (for untitled files, save-as, move/rename)
+// ============================================================================
+
+/**
+ * Open the save picker for a file
+ */
+function openSavePickerForFile(
+    filePath: string,
+    options: { copyMode: boolean; closeAfter: boolean }
+): void {
+    const { copyMode, closeAfter } = options;
+
+    // Pause autosave while picker is open
+    const resumeAutosave = pauseAutosave();
+
+    QuickPicker.openSaveTo({
+        filePath,
+        copyMode,
+        closeAfter,
+        onComplete: async (newPath: string, wasCopy: boolean, shouldClose: boolean) => {
+            resumeAutosave();
+            await handleSavePickerComplete(filePath, newPath, wasCopy, shouldClose);
+        },
+        onCancel: (reason: string) => {
+            resumeAutosave();
+            if (reason === 'discard' && closeAfter) {
+                // User chose to discard - close the file
+                handleDiscardUntitled(filePath);
+            }
+            // Otherwise just cancelled, do nothing
+        },
+    });
+}
+
+/**
+ * Handle completion of save picker operation
+ */
+async function handleSavePickerComplete(
+    oldPath: string,
+    newPath: string,
+    wasCopy: boolean,
+    shouldClose: boolean
+): Promise<void> {
+    const isUntitled = SessionState.isUntitledFile(oldPath);
+
+    if (wasCopy) {
+        // Copy operation - just notify success
+        showNotification('File copied', `Copied to ${newPath.split('/').pop()}`, 'success');
+        return;
+    }
+
+    // Move operation
+    console.log('[Codes] Moving file:', oldPath, '->', newPath);
+
+    // 1. Clean up Yjs for old path
+    if (currentYjsFilePath === oldPath) {
+        cleanupYjsCollab();
+    }
+
+    // 2. Get file state before removing
+    const file = appState.openFiles.get(oldPath);
+    const scrollTop = file?.scrollTop || 0;
+
+    // 3. Update AppState - transfer state to new path
+    if (file) {
+        appState.openFiles.delete(oldPath);
+        appState.openFiles.set(newPath, {
+            ...file,
+            modified: false, // File was just saved
+        });
+
+        if (appState.currentFilePath === oldPath) {
+            appState.setCurrentFile(newPath);
+        }
+    }
+
+    // 4. Update SessionState
+    SessionState.removeOpenFile(oldPath);
+    SessionState.addOpenFile(newPath, file?.content || '', false);
+    SessionState.setActiveFile(newPath);
+
+    // 5. Update file tabs
+    fileTabs?.renameTab(oldPath, newPath, newPath.split('/').pop() || '');
+
+    // 6. Update recent notebooks
+    if (isUntitled) {
+        // Remove untitled from recent
+        await SessionState.removeRecentNotebook(oldPath);
+    }
+    await SessionState.addRecentNotebook(newPath, newPath.split('/').pop()?.replace('.md', '') || '');
+
+    if (shouldClose) {
+        // Close after save
+        await handleTabClose(oldPath);
+        // Show home screen after closing
+        HomeScreen.show();
+        return;
+    }
+
+    // 7. Detect if we moved to a different project
+    const oldDir = oldPath.substring(0, oldPath.lastIndexOf('/'));
+    const newDir = newPath.substring(0, newPath.lastIndexOf('/'));
+
+    if (oldDir !== newDir) {
+        // Check if new location is in a different project
+        const newProject = await detectProjectForPath(newDir);
+        const currentProject = SessionState.getCurrentProject();
+
+        if (newProject && (!currentProject || newProject.path !== currentProject.path)) {
+            // Switch to new project
+            console.log('[Codes] File moved to different project, switching:', newProject.path);
+            SessionState.openProject(newProject.path);
+        }
+    }
+
+    // 8. Set up Yjs for new path
+    if (newPath.endsWith('.md') && useCollaboration && services.collaboration.isConnected) {
+        await setupYjsForFile(newPath);
+    }
+
+    // 9. Update editor state
+    editor.setFilePath(newPath);
+    const filename = newPath.split('/').pop() || newPath;
+    document.title = `${filename} - MRMD`;
+
+    // 10. Restore scroll position
+    if (scrollTop) {
+        requestAnimationFrame(() => {
+            container.scrollTop = scrollTop;
+        });
+    }
+
+    updateFileIndicator();
+    showNotification('File saved', `Saved as ${newPath.split('/').pop()}`, 'success');
+}
+
+/**
+ * Detect project for a given path
+ */
+async function detectProjectForPath(dirPath: string): Promise<{ path: string; name: string } | null> {
+    try {
+        const response = await fetch('/api/project/detect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: dirPath }),
+        });
+        if (response.ok) {
+            const data = await response.json();
+            if (data.is_project) {
+                return { path: data.project_path, name: data.project_name };
+            }
+        }
+    } catch (err) {
+        console.error('[Codes] Project detection failed:', err);
+    }
+    return null;
+}
+
+/**
+ * Handle discarding an untitled file
+ */
+async function handleDiscardUntitled(filePath: string): Promise<void> {
+    // Delete the untitled file from disk
+    services.documents.deleteFile(filePath).catch(err => {
+        console.warn('[Codes] Failed to delete untitled file:', err);
+    });
+
+    // Remove from recent notebooks
+    await SessionState.removeRecentNotebook(filePath);
+
+    // Close the tab
+    await handleTabClose(filePath);
+
+    // Show home screen
+    HomeScreen.show();
+}
+
 async function createNewNotebook(projectPath?: string, initialContent?: string): Promise<void> {
     const currentProject = appState.project;
     const scratchPath = SessionState.getScratchPath();
@@ -2877,8 +3189,31 @@ async function handleTabSelect(path: string): Promise<void> {
     }
 }
 
-async function handleBeforeTabClose(path: string): Promise<void> {
+/**
+ * Handle actions before closing a tab.
+ * Returns true if the tab should close, false to prevent close.
+ */
+async function handleBeforeTabClose(path: string): Promise<boolean> {
     const file = appState.openFiles.get(path);
+
+    // Check if this is an untitled file
+    if (SessionState.isUntitledFile(path)) {
+        // Untitled file - need special handling
+        return new Promise((resolve) => {
+            openSavePickerForFile(path, {
+                copyMode: false,
+                closeAfter: true,
+            });
+
+            // Override the callbacks to control the resolve
+            // The picker will call onComplete or onCancel which we handle in openSavePickerForFile
+            // For now, we return false to prevent immediate close
+            // The actual close will happen via handleTabClose in the callbacks
+            resolve(false);
+        });
+    }
+
+    // Normal file - just save if modified
     if (file?.modified) {
         try {
             await services.documents.saveFile(path, file.content);
@@ -2889,6 +3224,8 @@ async function handleBeforeTabClose(path: string): Promise<void> {
             console.error('[Tabs] Error saving before close:', err);
         }
     }
+
+    return true; // Allow close
 }
 
 async function handleTabClose(path: string): Promise<void> {
@@ -2959,7 +3296,9 @@ async function handleProjectOpened(project: ProjectOpenedEvent): Promise<void> {
 
     // Configure IPython client for this project
     // Since executor uses the same client, everything stays in sync
-    ipython.setSession('main');
+    // NOTE: Don't set session here - it's set by the kernel-ready event handler
+    // after the session is actually configured. Setting 'main' here would cause
+    // code execution to go to the wrong session.
     ipython.setProjectPath(project.path);
     ipython.setFigureDir(project.path + '/.mrmd/assets');
 
@@ -3087,6 +3426,120 @@ function showNotification(title: string, message: string, type = 'info'): void {
     } else {
         console.log(`[Notification] ${type}: ${title} - ${message}`);
     }
+}
+
+/**
+ * Show a dialog when there's a project mismatch before code execution.
+ * Returns the user's choice: 'switch' | 'continue' | 'cancel'
+ */
+async function showProjectMismatchDialog(
+    viewedProject: string,
+    activeProject: string
+): Promise<'switch' | 'continue' | 'cancel'> {
+    return new Promise((resolve) => {
+        // Create dialog overlay
+        const overlay = document.createElement('div');
+        overlay.className = 'project-mismatch-dialog-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+        `;
+
+        const dialog = document.createElement('div');
+        dialog.className = 'project-mismatch-dialog';
+        dialog.style.cssText = `
+            background: var(--bg-primary, #1e1e1e);
+            border: 1px solid var(--border-color, #333);
+            border-radius: 8px;
+            padding: 20px;
+            max-width: 400px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        `;
+
+        dialog.innerHTML = `
+            <h3 style="margin: 0 0 12px 0; color: var(--text-primary, #fff);">
+                Project Mismatch
+            </h3>
+            <p style="margin: 0 0 16px 0; color: var(--text-secondary, #aaa); line-height: 1.5;">
+                This file is from <strong style="color: var(--accent-color, #4fc3f7);">${viewedProject}</strong>
+                but the kernel is running in <strong style="color: var(--accent-color, #4fc3f7);">${activeProject}</strong>.
+            </p>
+            <p style="margin: 0 0 20px 0; color: var(--text-secondary, #aaa); font-size: 0.9em;">
+                Would you like to switch to ${viewedProject}'s environment?
+            </p>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button class="mismatch-btn cancel" style="
+                    padding: 8px 16px;
+                    border: 1px solid var(--border-color, #444);
+                    background: transparent;
+                    color: var(--text-secondary, #aaa);
+                    border-radius: 4px;
+                    cursor: pointer;
+                ">Cancel</button>
+                <button class="mismatch-btn continue" style="
+                    padding: 8px 16px;
+                    border: 1px solid var(--border-color, #444);
+                    background: transparent;
+                    color: var(--text-primary, #fff);
+                    border-radius: 4px;
+                    cursor: pointer;
+                ">Run in ${activeProject}</button>
+                <button class="mismatch-btn switch" style="
+                    padding: 8px 16px;
+                    border: none;
+                    background: var(--accent-color, #4fc3f7);
+                    color: #000;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-weight: 500;
+                ">Switch to ${viewedProject}</button>
+            </div>
+        `;
+
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+
+        // Handle button clicks
+        const cleanup = () => {
+            document.body.removeChild(overlay);
+        };
+
+        dialog.querySelector('.mismatch-btn.cancel')?.addEventListener('click', () => {
+            cleanup();
+            resolve('cancel');
+        });
+
+        dialog.querySelector('.mismatch-btn.continue')?.addEventListener('click', () => {
+            cleanup();
+            resolve('continue');
+        });
+
+        dialog.querySelector('.mismatch-btn.switch')?.addEventListener('click', () => {
+            cleanup();
+            resolve('switch');
+        });
+
+        // Handle escape key
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                cleanup();
+                document.removeEventListener('keydown', handleKeyDown);
+                resolve('cancel');
+            }
+        };
+        document.addEventListener('keydown', handleKeyDown);
+
+        // Focus switch button
+        (dialog.querySelector('.mismatch-btn.switch') as HTMLButtonElement)?.focus();
+    });
 }
 
 // ============================================================================

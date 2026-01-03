@@ -666,9 +666,13 @@ def get_mrmd_status() -> Dict[str, Any]:
     initialized = is_mrmd_initialized()
     config = get_config()
     default_project = get_default_project_path()
+    home = Path.home()
 
     status = {
         "initialized": initialized,
+        # Home directory - canonical source of truth for the user's home
+        "home_directory": str(home),
+        "username": home.name,  # e.g., "maxime" from "/home/maxime"
         "mrmd_home": str(MRMD_HOME),
         "mrmd_home_exists": MRMD_HOME.exists(),
         "default_project": str(default_project),
@@ -993,6 +997,159 @@ def list_venvs_in_tree(root: str, max_depth: int = 3) -> List[Dict[str, Any]]:
 
     search(root_path, 0)
     return venvs
+
+
+# ==================== Environment Setup ====================
+
+
+def setup_project_venv(project_path: str) -> Dict[str, Any]:
+    """
+    Create a venv in an existing project directory.
+    Uses uv for fast venv creation.
+
+    Args:
+        project_path: Path to the project directory
+
+    Returns:
+        Dict with success status and python_path
+    """
+    result = {
+        "success": False,
+        "message": "",
+        "python_path": None,
+        "venv_path": None,
+    }
+
+    project = Path(project_path)
+    if not project.exists():
+        result["message"] = f"Project directory not found: {project_path}"
+        return result
+
+    # Check if venv already exists
+    venv_path = project / ".venv"
+    if venv_path.exists():
+        python_path = venv_path / ("Scripts" if sys.platform == "win32" else "bin") / "python"
+        if python_path.exists():
+            result["success"] = True
+            result["message"] = "Venv already exists"
+            result["python_path"] = str(python_path)
+            result["venv_path"] = str(venv_path)
+            return result
+
+    # Find uv
+    uv_path = shutil.which("uv")
+    if not uv_path:
+        result["message"] = "uv not found. Please install uv: curl -LsSf https://astral.sh/uv/install.sh | sh"
+        return result
+
+    try:
+        # Create venv using uv (fast)
+        subprocess.run(
+            [uv_path, "venv"],
+            cwd=str(project),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        venv_path = project / ".venv"
+        python_path = venv_path / ("Scripts" if sys.platform == "win32" else "bin") / "python"
+
+        if python_path.exists():
+            # Install ipython for code execution
+            subprocess.run(
+                [uv_path, "pip", "install", "-p", str(python_path), "ipython"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            result["success"] = True
+            result["message"] = "Venv created successfully"
+            result["python_path"] = str(python_path)
+            result["venv_path"] = str(venv_path)
+        else:
+            result["message"] = "Venv created but python not found"
+
+    except subprocess.CalledProcessError as e:
+        result["message"] = f"Failed to create venv: {e.stderr}"
+    except Exception as e:
+        result["message"] = f"Error creating venv: {str(e)}"
+
+    return result
+
+
+def install_project_dependencies(project_path: str, deps_file: str = "pyproject.toml") -> Dict[str, Any]:
+    """
+    Install dependencies from pyproject.toml or requirements.txt.
+
+    Args:
+        project_path: Path to the project directory
+        deps_file: Name of the dependencies file
+
+    Returns:
+        Dict with success status
+    """
+    result = {
+        "success": False,
+        "message": "",
+        "installed": [],
+    }
+
+    project = Path(project_path)
+    if not project.exists():
+        result["message"] = f"Project directory not found: {project_path}"
+        return result
+
+    # Check for venv
+    venv_path = project / ".venv"
+    python_path = venv_path / ("Scripts" if sys.platform == "win32" else "bin") / "python"
+    if not python_path.exists():
+        result["message"] = "No venv found. Create one first."
+        return result
+
+    # Check for deps file
+    deps_path = project / deps_file
+    if not deps_path.exists():
+        result["message"] = f"Dependencies file not found: {deps_file}"
+        return result
+
+    # Find uv
+    uv_path = shutil.which("uv")
+    if not uv_path:
+        result["message"] = "uv not found"
+        return result
+
+    try:
+        if deps_file == "pyproject.toml":
+            # Install as editable package (gets dependencies from pyproject.toml)
+            subprocess.run(
+                [uv_path, "pip", "install", "-p", str(python_path), "-e", str(project)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            result["message"] = "Installed from pyproject.toml"
+        elif deps_file == "requirements.txt":
+            subprocess.run(
+                [uv_path, "pip", "install", "-p", str(python_path), "-r", str(deps_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            result["message"] = "Installed from requirements.txt"
+        else:
+            result["message"] = f"Unknown deps file type: {deps_file}"
+            return result
+
+        result["success"] = True
+
+    except subprocess.CalledProcessError as e:
+        result["message"] = f"Failed to install dependencies: {e.stderr}"
+    except Exception as e:
+        result["message"] = f"Error installing dependencies: {str(e)}"
+
+    return result
 
 
 # ==================== Session Persistence ====================

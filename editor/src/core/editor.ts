@@ -15,6 +15,7 @@ import type { EditorConfig } from './config';
 import { defaultConfig } from './config';
 import { getCodeBlocksFromAST, isOutputBlock, type CodeBlockInfo } from './code-blocks';
 import { markdownDecorations, TrackerRef, QueueRef, FilePathRef } from '../markdown/decorations';
+import { showWhitespace } from './whitespace';
 import { zenTheme } from '../themes/zen';
 import { ExecutionTracker } from '../execution/tracker';
 import { ExecutionQueue, createExecutionQueue } from '../execution/queue';
@@ -43,6 +44,14 @@ export class MrmdEditor {
 
   // Compartment for dynamic Yjs collaboration extensions (yCollab, cursors, etc.)
   private collabCompartment = new Compartment();
+
+  // Compartment for whitespace highlighting (toggleable)
+  private whitespaceCompartment = new Compartment();
+  private _showWhitespace = false;
+
+  // Compartment for markdown decorations (toggleable for raw mode)
+  private decorationsCompartment = new Compartment();
+  private _rawMode = false;
 
   constructor(config: EditorConfig) {
     this.config = { ...defaultConfig, ...config };
@@ -107,12 +116,19 @@ export class MrmdEditor {
         codeLanguages: languages,
       }),
 
-      // Decorations (uses refs which get populated after view creation)
-      markdownDecorations(this.trackerRef, {
-        resolveImageUrl: this.config.resolveImageUrl,
-        queueRef: this.queueRef,
-        filePathRef: this.filePathRef,
-      }),
+      // Decorations compartment (toggleable for raw mode)
+      // Contains markdown decorations which render images, tables, code cells, etc.
+      this.decorationsCompartment.of(
+        markdownDecorations(this.trackerRef, {
+          resolveImageUrl: this.config.resolveImageUrl,
+          queueRef: this.queueRef,
+          filePathRef: this.filePathRef,
+        })
+      ),
+
+      // Whitespace compartment (toggleable)
+      // Initially empty, can be populated with highlightWhitespace()
+      this.whitespaceCompartment.of([]),
 
       // Folding
       headingFoldService,
@@ -223,6 +239,59 @@ export class MrmdEditor {
       effects: this.collabCompartment.reconfigure([]),
     });
     console.log('[MrmdEditor] Collab extensions cleared');
+  }
+
+  // ============================================================================
+  // View Mode API (Whitespace & Raw Mode)
+  // ============================================================================
+
+  /**
+   * Toggle whitespace visibility.
+   * Shows spaces (·), tabs (→), and newlines (¶).
+   */
+  setShowWhitespace(show: boolean): void {
+    this._showWhitespace = show;
+    this.view.dispatch({
+      effects: this.whitespaceCompartment.reconfigure(
+        show ? showWhitespace() : []
+      ),
+    });
+    console.log('[MrmdEditor] Whitespace visibility:', show);
+  }
+
+  /**
+   * Get current whitespace visibility setting.
+   */
+  getShowWhitespace(): boolean {
+    return this._showWhitespace;
+  }
+
+  /**
+   * Toggle raw/source mode.
+   * When enabled, hides all markdown decorations (images, tables, widgets)
+   * and shows the raw markdown text.
+   */
+  setRawMode(raw: boolean): void {
+    this._rawMode = raw;
+    this.view.dispatch({
+      effects: this.decorationsCompartment.reconfigure(
+        raw
+          ? [] // No decorations in raw mode
+          : markdownDecorations(this.trackerRef, {
+              resolveImageUrl: this.config.resolveImageUrl,
+              queueRef: this.queueRef,
+              filePathRef: this.filePathRef,
+            })
+      ),
+    });
+    console.log('[MrmdEditor] Raw mode:', raw);
+  }
+
+  /**
+   * Get current raw mode setting.
+   */
+  getRawMode(): boolean {
+    return this._rawMode;
   }
 
   private getThemeExtension(): Extension {

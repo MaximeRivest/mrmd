@@ -338,8 +338,10 @@ class YjsDocumentManager:
         # Skip if content is unchanged (prevents echo when saving to file)
         current_content = yjs_doc.content
         if current_content == content:
-            print(f'[YjsManager] Content unchanged for {file_path}, skipping update')
+            print(f'[YjsManager] Content unchanged for {file_path}, skipping update (both {len(content)} chars)')
             return None
+
+        print(f'[YjsManager] Content CHANGED for {file_path}: {len(current_content)} -> {len(content)} chars')
 
         # Get state before change
         old_state = bytes(yjs_doc.doc.get_state())

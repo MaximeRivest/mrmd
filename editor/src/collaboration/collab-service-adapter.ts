@@ -308,10 +308,15 @@ export class CollabServiceYjsAdapter implements YjsProviderInterface {
 
         if (payload.update) {
             const update = this.fromBase64(payload.update);
-            console.log('[CollabServiceYjsAdapter] Received remote update from', payload.session_id, 'size:', update.length);
+            const contentBefore = this.ydoc.getText('content').toString().length;
+
+            console.log('[CollabServiceYjsAdapter] Received remote update from', payload.session_id, 'size:', update.length, 'content before:', contentBefore);
 
             // Apply with 'remote' origin
             Y.applyUpdate(this.ydoc, update, 'remote');
+
+            const contentAfter = this.ydoc.getText('content').toString().length;
+            console.log('[CollabServiceYjsAdapter] After applying update, content:', contentAfter, 'chars (delta:', contentAfter - contentBefore, ')');
         }
     };
 

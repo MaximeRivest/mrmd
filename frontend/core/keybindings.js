@@ -84,42 +84,40 @@ export const KEYBINDINGS = {
     // =========================================================================
     // NAVIGATION (Global)
     // =========================================================================
-    'nav:project-explorer': {
+    // Universal picker: ⌘P opens it, prefixes switch modes:
+    // (none) = files, / = browse, > = commands, ? = content search
+    'nav:picker': {
         key: 'p',
         mod: true,
         context: 'global',
-        label: 'Project Explorer',
-        description: 'Toggle project explorer / file browser',
+        label: 'Open',
+        description: 'Open universal picker (find files, commands, browse)',
     },
-    'nav:project-explorer-alt': {
-        key: 'b',
-        mod: true,
-        context: 'not-editor',
-        label: 'Project Explorer',
-        description: 'Toggle project explorer (when not in editor)',
-    },
+    // ⌘⇧P opens picker with > prefix (commands mode)
     'nav:quick-open-commands': {
         key: 'p',
         mod: true,
         shift: true,
         context: 'global',
-        label: 'Command Palette',
-        description: 'Open command palette',
+        label: 'Commands',
+        description: 'Open command palette (> prefix in picker)',
     },
+    // ⌘O opens picker with / prefix (browse mode)
     'nav:browse': {
         key: 'o',
         mod: true,
         context: 'global',
-        label: 'Browse Files',
-        description: 'Open file browser',
+        label: 'Browse',
+        description: 'Open file browser (/ prefix in picker)',
     },
+    // ⌘⇧F opens picker with ? prefix (content search)
     'nav:search-content': {
         key: 'f',
         mod: true,
         shift: true,
         context: 'global',
         label: 'Search in Files',
-        description: 'Search content across files',
+        description: 'Search content across files (? prefix in picker)',
     },
     'nav:toggle-toc': {
         key: 'o',
@@ -140,10 +138,8 @@ export const KEYBINDINGS = {
         label: 'Toggle Terminal',
         description: 'Show/hide terminal',
     },
-    // Note: Ctrl+B is handled by:
-    // - format:bold (editor context)
-    // - nav:project-explorer-alt (not-editor context)
-    // ui:toggle-sidebar removed to avoid conflict
+    // Note: Ctrl+B is handled by format:bold in editor context
+    // In non-editor context, Ctrl+B is reserved for future use
     'ui:settings': {
         key: ',',
         mod: true,

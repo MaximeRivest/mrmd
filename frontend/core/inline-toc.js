@@ -74,9 +74,8 @@ export function activate() {
     }
 
     // Get current markdown and extract headings
-    const markdown = typeof editorRef.getContent === 'function'
-        ? editorRef.getContent()
-        : '';
+    // Support both CM6 editor (getDoc) and legacy editor (getContent)
+    const markdown = (editorRef.getDoc?.() ?? editorRef.getContent?.()) || '';
 
     headings = extractHeadings(markdown);
 

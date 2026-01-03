@@ -592,9 +592,14 @@ function createTab(path, fileState, isActive, options) {
     tab.querySelector('.tab-close').addEventListener('click', async (e) => {
         e.stopPropagation();
 
-        // If file is modified, save it first
-        if (fileState.modified && onBeforeClose) {
-            await onBeforeClose(path);
+        // Check if we need to handle before close (modified or untitled file)
+        const isUntitled = SessionState.isUntitledFile?.(path);
+        if ((fileState.modified || isUntitled) && onBeforeClose) {
+            const shouldClose = await onBeforeClose(path);
+            if (!shouldClose) {
+                // Close was prevented (e.g., save picker shown for untitled)
+                return;
+            }
         }
 
         SessionState.removeOpenFile(path);

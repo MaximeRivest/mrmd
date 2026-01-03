@@ -34,3 +34,13 @@ export {
   createImageOutputWidget,
   type ImageOutputWidgetConfig,
 } from './image-output';
+export {
+  TableWidget,
+  createTableWidget,
+  generateTableId,
+  type TableWidgetConfig,
+} from './table';
+export { TaskCheckboxWidget } from './task-checkbox';
+export { AlertTitleWidget } from './alert-title';
+export { MermaidWidget } from './mermaid';
+export { FootnoteRefWidget } from './footnote';

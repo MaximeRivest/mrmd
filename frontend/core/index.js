@@ -38,7 +38,6 @@ export { createToolRail } from './tool-rail.js';
 export { createToolPanel, registerPanel } from './tool-panel.js';
 export { createAIPanel } from './ai-panel.js';
 export { createTerminalOverlay } from './terminal-overlay.js';
-export { createMobileNav } from './mobile-nav.js';
 export { createCompactStatus } from './compact-status.js';
 export { createHomeScreen } from './home-screen.js';
 export { createQuickPicker, open as openQuickPicker, close as closeQuickPicker } from './quick-picker.js';

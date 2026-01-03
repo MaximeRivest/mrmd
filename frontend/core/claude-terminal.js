@@ -6,6 +6,38 @@
  */
 
 /**
+ * Calculate optimal font size for a terminal container.
+ * xterm.js FitAddon adjusts cols/rows but not font size.
+ * This calculates font size to achieve a target column count.
+ *
+ * @param {HTMLElement} container - Terminal container
+ * @param {Object} options - Sizing options
+ * @param {number} options.minCols - Minimum columns to display (default: 40)
+ * @param {number} options.minFontSize - Minimum font size (default: 9)
+ * @param {number} options.maxFontSize - Maximum font size (default: 14)
+ * @param {number} options.charWidthRatio - Char width / font size ratio (default: 0.6)
+ * @returns {number} Optimal font size
+ */
+function calculateFontSize(container, options = {}) {
+    const {
+        minCols = 40,
+        minFontSize = 9,
+        maxFontSize = 14,
+        charWidthRatio = 0.6,
+    } = options;
+
+    const width = container.offsetWidth || container.clientWidth || 300;
+
+    // Calculate font size that would give us minCols
+    // width = cols * fontSize * charWidthRatio
+    // fontSize = width / (cols * charWidthRatio)
+    const computed = width / (minCols * charWidthRatio);
+
+    // Clamp to min/max bounds
+    return Math.max(minFontSize, Math.min(maxFontSize, Math.round(computed)));
+}
+
+/**
  * Get terminal theme matching home screen.
  */
 function getTerminalTheme() {
@@ -87,11 +119,18 @@ export function createClaudeTerminal(container, options = {}) {
     terminalEl.className = 'claude-terminal';
     container.appendChild(terminalEl);
 
+    // Calculate responsive font size based on container
+    const initialFontSize = calculateFontSize(container, {
+        minCols: 60,      // Claude Code needs decent width
+        minFontSize: 9,
+        maxFontSize: 14,
+    });
+
     // Create xterm instance
     const terminal = new window.Terminal({
         cursorBlink: true,
         cursorStyle: 'bar',
-        fontSize: 13,
+        fontSize: initialFontSize,
         fontFamily: '"SF Mono", "Fira Code", "Monaco", "Inconsolata", monospace',
         lineHeight: 1.4,
         scrollback: 5000,
@@ -281,6 +320,8 @@ export function createClaudeTerminal(container, options = {}) {
                 // Debounce resize events for smooth dragging
                 clearTimeout(resizeTimeout);
                 resizeTimeout = setTimeout(() => {
+                    // Recalculate font size on resize
+                    updateFontSize();
                     fit();
                     sendResize();
                 }, 30);
@@ -290,6 +331,20 @@ export function createClaudeTerminal(container, options = {}) {
         resizeObserver.observe(terminalEl);
 
         state.resizeObserver = resizeObserver;
+    }
+
+    /**
+     * Update font size based on current container dimensions.
+     */
+    function updateFontSize() {
+        const newSize = calculateFontSize(container, {
+            minCols: 60,
+            minFontSize: 9,
+            maxFontSize: 14,
+        });
+        if (terminal.options.fontSize !== newSize) {
+            terminal.options.fontSize = newSize;
+        }
     }
 
     /**

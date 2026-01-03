@@ -39,6 +39,21 @@ export interface DocumentUpdateCallbacks {
  * - Yjs CRDT for collaborative output visibility
  * - File callbacks for background file updates
  */
+/**
+ * Callback for pre-execution check.
+ * Return { proceed: true } to continue, or { proceed: false, message? } to cancel.
+ */
+export interface BeforeExecuteResult {
+  proceed: boolean;
+  message?: string;
+}
+
+export type BeforeExecuteCallback = (info: {
+  code: string;
+  language: string;
+  filePath: string | null;
+}) => Promise<BeforeExecuteResult>;
+
 export class ExecutionTracker {
   private running = new Map<string, { controller: AbortController; filePath: string | null }>();
   private view: EditorView;
@@ -49,6 +64,7 @@ export class ExecutionTracker {
   private writeThrottleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private pendingWrites = new Map<string, string>();
   private writeThrottleMs = 100; // Throttle writes to avoid performance issues
+  private beforeExecuteCallback: BeforeExecuteCallback | null = null;
 
   // Persistent terminal buffers for proper cursor movement handling across chunks
   // Each execution gets its own buffer that accumulates output correctly
@@ -58,6 +74,14 @@ export class ExecutionTracker {
   constructor(view: EditorView, executor: Executor) {
     this.view = view;
     this.executor = executor;
+  }
+
+  /**
+   * Set a callback that is called before execution starts.
+   * The callback can cancel execution (e.g., for project mismatch prompts).
+   */
+  setBeforeExecuteCallback(callback: BeforeExecuteCallback | null): void {
+    this.beforeExecuteCallback = callback;
   }
 
   /**
@@ -114,6 +138,23 @@ export class ExecutionTracker {
   ): Promise<string> {
     // Capture the file path at execution start
     const filePath = this.fileCallbacks?.getCurrentFilePath() ?? null;
+
+    // Check beforeExecute callback (e.g., for project mismatch prompts)
+    // This allows the host to intercept and potentially cancel execution
+    if (this.beforeExecuteCallback && language !== 'html') {
+      try {
+        const result = await this.beforeExecuteCallback({ code, language, filePath });
+        if (!result.proceed) {
+          // Execution cancelled - create a placeholder exec ID but don't actually run
+          const cancelledExecId = `cancelled-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          console.log('[Tracker] Execution cancelled by beforeExecute callback:', result.message);
+          return cancelledExecId;
+        }
+      } catch (err) {
+        console.error('[Tracker] beforeExecute callback error:', err);
+        // Continue with execution if callback fails
+      }
+    }
 
     // HTML is handled specially - it's "executed" by rendering (not queued)
     if (language === 'html') {

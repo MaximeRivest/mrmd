@@ -142,7 +142,6 @@
     --rail-width:    48px;
     --rail-icon:     44px;
 
-    --bottom-nav-height: 56px;
     --sheet-handle:      4px;
 
     /* ------------------------------------------------------------------
@@ -5573,8 +5572,7 @@ html, body {
 /* Developer mode: Hide compact UI, show developer UI */
 .developer-mode .compact-floating-ui,
 .developer-mode .tool-rail,
-.developer-mode .file-navigator-view,
-.developer-mode .mobile-bottom-nav {
+.developer-mode .file-navigator-view {
     display: none;
 }
 
@@ -5745,6 +5743,98 @@ html, body {
     visibility: visible;
 }
 
+/* --- Project Status Display --- */
+.compact-project-status {
+    position: fixed;
+    top: var(--space-3);
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-3);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    pointer-events: auto;
+    cursor: pointer;
+    transition: background var(--duration-fast) ease,
+                border-color var(--duration-fast) ease;
+    z-index: var(--z-sticky);
+    opacity: 0;
+    visibility: hidden;
+}
+
+.compact-mode .compact-project-status {
+    opacity: 1;
+    visibility: visible;
+}
+
+.compact-project-status:hover {
+    background: var(--bg-subtle);
+    border-color: var(--border-strong);
+}
+
+.compact-project-status .project-name {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text);
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.compact-project-status.no-project .project-name {
+    color: var(--muted);
+}
+
+.compact-project-status.viewing-mode .project-name {
+    color: var(--warning);
+    font-style: italic;
+}
+
+/* Status indicator dot */
+.project-status-indicator {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.project-status-indicator.ready {
+    background: var(--success, #9ece6a);
+}
+
+.project-status-indicator.setting-up {
+    background: var(--warning, #e0af68);
+    animation: pulse-indicator 1s ease-in-out infinite;
+}
+
+.project-status-indicator.none {
+    background: var(--muted);
+    opacity: 0.5;
+}
+
+.project-status-indicator.error {
+    background: var(--error, #f7768e);
+}
+
+@keyframes pulse-indicator {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+/* Viewing mode indicator (file from different project) */
+.compact-project-status.viewing-mode .project-name {
+    color: var(--muted);
+    font-style: italic;
+}
+
+.compact-project-status.viewing-mode .project-status-indicator {
+    opacity: 0.4;
+}
+
 /* --- Tool Rail --- */
 .tool-rail {
     display: none;
@@ -5762,7 +5852,7 @@ html, body {
 /* Tool rail is hidden by default, shown when .open class is added */
 .compact-mode .tool-rail.open {
     display: flex;
-    bottom: 0;
+    bottom: var(--status-height); /* Don't overlap status bar */
 }
 
 /* Tool rail positioning */
@@ -6354,69 +6444,6 @@ html, body {
 .status-ai-btn {
     color: var(--accent);
     font-weight: var(--font-medium);
-}
-
-/* --- Mobile Bottom Navigation --- */
-.mobile-bottom-nav {
-    display: none;
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: var(--bottom-nav-height);
-    background: var(--bg);
-    border-top: 1px solid var(--border);
-    padding-bottom: env(safe-area-inset-bottom);
-    z-index: var(--z-sticky);
-}
-
-@media (max-width: 767px) {
-    .compact-mode .mobile-bottom-nav {
-        display: flex;
-        justify-content: space-around;
-        align-items: center;
-    }
-
-    /* On mobile, hide floating UI (mobile nav replaces it) */
-    .compact-mode .compact-floating-ui {
-        display: none !important;
-    }
-
-    /* On mobile, always hide tool rail (even if .open) */
-    .compact-mode .tool-rail,
-    .compact-mode .tool-rail.open {
-        display: none !important;
-    }
-
-    .compact-mode .compact-status-bar,
-    .compact-mode .status-bar {
-        display: none;
-    }
-}
-
-.mobile-nav-item {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-    padding: var(--space-2) var(--space-4);
-    color: var(--muted);
-    font-size: var(--text-xs);
-    background: transparent;
-    border: none;
-    cursor: pointer;
-}
-
-.mobile-nav-item:active {
-    background: var(--bg-subtle);
-}
-
-.mobile-nav-item.active {
-    color: var(--accent);
-}
-
-.mobile-nav-icon {
-    font-size: var(--text-xl);
 }
 
 /* --- Mobile Sheets --- */
@@ -7089,14 +7116,6 @@ html, body {
     color: var(--text);
 }
 
-/* --- Adjust content area for compact mode --- */
-@media (max-width: 767px) {
-    .compact-mode .editor-pane {
-        /* Account for bottom nav on mobile */
-        margin-bottom: var(--bottom-nav-height);
-    }
-}
-
 /* --- More Menu --- */
 .more-menu {
     display: flex;
@@ -7489,6 +7508,13 @@ html, body {
     animation: blink 1s step-end infinite;
 }
 
+.home-welcome-hint {
+    margin-top: var(--space-8) !important;
+    font-size: var(--text-sm);
+    color: var(--text-tertiary);
+    opacity: 0.5;
+}
+
 @keyframes blink {
     0%, 100% { opacity: 1; }
     50% { opacity: 0; }
@@ -7547,6 +7573,17 @@ html, body {
     min-width: 0;
 }
 
+.home-notebook-path {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 1;
+}
+
 .home-notebook-meta {
     display: flex;
     align-items: baseline;
@@ -7563,8 +7600,12 @@ html, body {
 }
 
 .home-notebook-when {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
     color: var(--muted);
     opacity: 0.7;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 /* --- Projects (Small, at bottom) --- */
@@ -7806,327 +7847,7 @@ html, body {
     opacity: 0.5;
 }
 
-/* ==============================================================================
-   PROJECT EXPLORER - Browse project files naturally
-   Design: Quiet, instant search, preview on right, feels like your own space
-   ============================================================================ */
-
-.project-explorer-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 650;
-    opacity: 0;
-    visibility: hidden;
-    transition: opacity var(--duration-normal) var(--ease-out), visibility var(--duration-normal);
-}
-
-.project-explorer-overlay.visible {
-    opacity: 1;
-    visibility: visible;
-}
-
-.project-explorer {
-    background: var(--bg);
-    border-radius: var(--radius-lg);
-    width: 90%;
-    max-width: 900px;
-    height: 70vh;
-    max-height: 600px;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2);
-}
-
-/* --- Header --- */
-.project-explorer-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--space-3) var(--space-4);
-    border-bottom: 1px solid var(--border);
-}
-
-.project-explorer-name {
-    font-family: var(--font-mono);
-    font-size: var(--text-base);
-    font-weight: var(--font-medium);
-    color: var(--text);
-}
-
-.project-explorer-modes {
-    display: flex;
-    gap: var(--space-1);
-}
-
-.pe-mode {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--muted);
-    background: transparent;
-    border: none;
-    padding: var(--space-1) var(--space-2);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: all var(--duration-fast) ease;
-}
-
-.pe-mode:hover {
-    color: var(--text);
-    background: var(--bg-subtle);
-}
-
-.pe-mode.active {
-    color: var(--text);
-    background: var(--bg-subtle);
-}
-
-/* --- Search --- */
-.project-explorer-search {
-    padding: var(--space-2) var(--space-4);
-    border-bottom: 1px solid var(--border);
-}
-
-.pe-search-input {
-    width: 100%;
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    color: var(--text);
-    background: transparent;
-    border: none;
-    outline: none;
-    padding: var(--space-2) 0;
-}
-
-.pe-search-input::placeholder {
-    color: var(--muted);
-    opacity: 0.7;
-}
-
-.pe-search-input:focus {
-    color: var(--text);
-}
-
-/* --- Body (List + Preview) --- */
-.project-explorer-body {
-    flex: 1;
-    display: flex;
-    overflow: hidden;
-}
-
-.project-explorer-list {
-    flex: 1;
-    overflow-y: auto;
-    border-right: 1px solid var(--border);
-    min-width: 0;
-}
-
-.project-explorer-preview {
-    width: 50%;
-    display: flex;
-    flex-direction: column;
-    background: var(--bg-subtle);
-}
-
-/* --- List Items --- */
-.pe-item {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
-    cursor: pointer;
-    transition: background var(--duration-fast) ease;
-}
-
-.pe-item:hover {
-    background: var(--bg-subtle);
-}
-
-.pe-item.selected {
-    background: var(--primary-subtle);
-}
-
-.pe-item-icon {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--muted);
-    width: 16px;
-    text-align: center;
-    flex-shrink: 0;
-}
-
-.pe-item-name {
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    color: var(--text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.pe-item-recent {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--primary);
-    opacity: 0.7;
-    flex-shrink: 0;
-}
-
-.pe-item-path {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    margin-left: auto;
-    flex-shrink: 1;
-    min-width: 0;
-}
-
-/* Content search items */
-.pe-content-item {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-1);
-}
-
-.pe-item-content {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-2);
-    flex-wrap: wrap;
-    width: 100%;
-}
-
-.pe-item-line {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--muted);
-}
-
-.pe-item-match {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--text-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    width: 100%;
-}
-
-.pe-item-match mark {
-    background: var(--warning-subtle);
-    color: var(--text);
-    border-radius: 2px;
-    padding: 0 2px;
-}
-
-.pe-empty {
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    color: var(--muted);
-    text-align: center;
-    padding: var(--space-8);
-}
-
-/* --- Preview Pane --- */
-.pe-preview-header {
-    padding: var(--space-2) var(--space-3);
-    border-bottom: 1px solid var(--border);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--muted);
-    background: var(--bg);
-}
-
-.pe-preview-content {
-    flex: 1;
-    overflow: auto;
-    padding: var(--space-2) var(--space-3);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    line-height: 1.5;
-    color: var(--text-secondary);
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-
-.pe-preview-empty {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    color: var(--muted);
-}
-
-.pe-preview-highlight {
-    background: var(--warning-subtle);
-    display: inline;
-}
-
-/* --- Footer --- */
-.project-explorer-footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--space-2) var(--space-4);
-    border-top: 1px solid var(--border);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--muted);
-}
-
-.pe-footer-hint {
-    display: flex;
-    gap: var(--space-3);
-}
-
-.pe-footer-hint kbd {
-    font-family: var(--font-mono);
-    background: var(--bg-subtle);
-    padding: 2px 4px;
-    border-radius: var(--radius-sm);
-    font-size: var(--text-xs);
-}
-
-.pe-footer-count {
-    opacity: 0.7;
-}
-
-/* Fuzzy match highlighting */
-.pe-item-name mark,
-.pe-item-path mark {
-    background: transparent;
-    color: var(--primary);
-    font-weight: var(--font-medium);
-}
-
-/* Mobile responsive */
-@media (max-width: 768px) {
-    .project-explorer {
-        width: 100%;
-        max-width: none;
-        height: 100%;
-        max-height: none;
-        border-radius: 0;
-    }
-
-    .project-explorer-preview {
-        display: none;
-    }
-
-    .project-explorer-list {
-        border-right: none;
-    }
-}
+/* NOTE: ProjectExplorer styles removed - functionality merged into QuickPicker browse mode */
 
 /* ==============================================================================
    PORTAL SCREEN - Level above home, shows all Claude's Homes
@@ -9157,6 +8878,49 @@ html, body {
     color: var(--muted);
 }
 
+/* Badge for open files */
+.quick-picker-item-badge {
+    font-family: var(--font-sans);
+    font-size: var(--text-2xs);
+    color: var(--accent);
+    background: var(--primary-subtle);
+    padding: 0 var(--space-1);
+    border-radius: var(--radius-sm);
+    margin-left: var(--space-1);
+}
+
+/* Separator before create option */
+.quick-picker-separator {
+    height: 1px;
+    background: var(--border);
+    margin: var(--space-2) var(--space-4);
+}
+
+/* Create option styling */
+.quick-picker-create-option {
+    color: var(--accent);
+}
+
+.quick-picker-create-option .quick-picker-item-icon {
+    color: var(--accent);
+    opacity: 1;
+}
+
+.quick-picker-create-option .quick-picker-item-name {
+    color: var(--accent);
+    font-style: italic;
+}
+
+/* Section headers in picker */
+.quick-picker-section-header {
+    font-family: var(--font-sans);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
+    padding: var(--space-2) var(--space-4) var(--space-1);
+}
+
 .quick-picker-item-shortcut {
     font-family: var(--font-sans);
     font-size: 10px;
@@ -9343,6 +9107,71 @@ html, body {
 .quick-picker-item-match .match-highlight {
     color: var(--accent);
     font-weight: var(--font-medium);
+}
+
+/* --- Save-To Mode Styles --- */
+.quick-picker-save-destination {
+    padding: var(--space-2) var(--space-3);
+    background: var(--primary-subtle, rgba(122, 162, 247, 0.1));
+    border-radius: var(--radius);
+    margin: var(--space-2) var(--space-3);
+    font-size: var(--text-sm);
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+}
+
+.save-destination-label {
+    color: var(--muted);
+    flex-shrink: 0;
+    font-family: var(--font-sans);
+}
+
+.save-destination-path {
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.quick-picker-copy-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-sm);
+    font-family: var(--font-sans);
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: color 0.1s ease;
+}
+
+.quick-picker-copy-toggle:hover {
+    color: var(--text);
+}
+
+.quick-picker-copy-toggle input[type="checkbox"] {
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.quick-picker-item-type {
+    color: var(--muted);
+    font-size: var(--text-xs);
+    margin-left: auto;
+}
+
+/* Make filename clickable in status bar */
+.current-file-indicator .file-name {
+    cursor: pointer;
+    transition: color 0.1s ease;
+}
+
+.current-file-indicator .file-name:hover {
+    color: var(--accent);
 }
 
 .quick-picker-item-recent {

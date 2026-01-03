@@ -29,6 +29,11 @@ let currentSessionName = 'main';              // Currently active session name
 let projectSessions = [];                     // List of sessions for current project
 let notebookSessionBindings = new Map();      // notebook path -> session name
 
+// Viewed file project tracking (for mismatch detection)
+// This tracks which project the currently viewed file belongs to,
+// which may differ from currentProject (the active kernel's project)
+let viewedFileProject = null;  // { path, projectPath, projectName }
+
 // Recent venvs storage
 const RECENT_VENVS_KEY = 'mrmd_recent_venvs';
 const MAX_RECENT_VENVS = 10;
@@ -57,6 +62,9 @@ const listeners = new Map();
 
 export function emit(event, data) {
     const handlers = listeners.get(event) || [];
+    if (event === 'untitled-file-exit-requested') {
+        console.log('[SessionState] Emitting', event, 'handlers:', handlers.length, 'data:', data);
+    }
     handlers.forEach(fn => fn(data));
 }
 
@@ -96,13 +104,132 @@ export function getIsWelcomeMode() { return isWelcomeMode; }
 export function getWelcomeContent() { return welcomeContent; }
 export function getCurrentSessionName() { return currentSessionName; }
 export function getScratchPath() { return mrmdStatus?.default_project || null; }
+
+/**
+ * Get the user's home directory from server (canonical source of truth)
+ * @returns {string|null} Home directory path, e.g., "/home/maxime"
+ */
+export function getHomeDirectory() {
+    return mrmdStatus?.home_directory || null;
+}
+
+/**
+ * Get the projects directory from server
+ * @returns {string|null} Projects directory path, e.g., "/home/maxime/Projects"
+ */
+export function getProjectsDirectory() {
+    return mrmdStatus?.projects_directory || null;
+}
+
+/**
+ * Get the username from server
+ * @returns {string|null} Username, e.g., "maxime"
+ */
+export function getUsername() {
+    return mrmdStatus?.username || null;
+}
+
 export function setCurrentSessionName(name) {
     currentSessionName = name;
     emit('session-name-changed', { name });
 }
 export function getProjectSessions() { return projectSessions; }
+
+// ==================== Viewed File Project (Mismatch Detection) ====================
+
+/**
+ * Set the project that the currently viewed file belongs to.
+ * This is used for mismatch detection at code execution time.
+ *
+ * @param {string} filePath - Path to the file
+ * @param {string|null} projectPath - Project path the file belongs to
+ * @param {string|null} projectName - Project name for display
+ */
+export function setViewedFileProject(filePath, projectPath, projectName) {
+    const wasMismatch = hasProjectMismatch();
+
+    viewedFileProject = {
+        path: filePath,
+        projectPath,
+        projectName,
+    };
+
+    const isMismatch = hasProjectMismatch();
+
+    // Emit event if mismatch state changed
+    if (wasMismatch !== isMismatch) {
+        emit('project-mismatch-changed', {
+            isMismatch,
+            viewedProject: projectName,
+            activeProject: currentProject?.name,
+            viewedProjectPath: projectPath,
+            activeProjectPath: currentProject?.path,
+        });
+    }
+}
+
+/**
+ * Get the currently viewed file's project info.
+ * @returns {{ path: string, projectPath: string|null, projectName: string|null }|null}
+ */
+export function getViewedFileProject() {
+    return viewedFileProject;
+}
+
+/**
+ * Check if there's a project mismatch (viewed file from different project than active kernel).
+ * @returns {boolean}
+ */
+export function hasProjectMismatch() {
+    if (!viewedFileProject || !currentProject) {
+        return false;
+    }
+    return viewedFileProject.projectPath !== null &&
+           viewedFileProject.projectPath !== currentProject.path;
+}
+
+/**
+ * Get mismatch info for display in UI.
+ * @returns {{ isMismatch: boolean, viewedProject?: string, activeProject?: string }|null}
+ */
+export function getProjectMismatchInfo() {
+    if (!hasProjectMismatch()) {
+        return { isMismatch: false };
+    }
+    return {
+        isMismatch: true,
+        viewedProject: viewedFileProject?.projectName,
+        activeProject: currentProject?.name,
+        viewedProjectPath: viewedFileProject?.projectPath,
+        activeProjectPath: currentProject?.path,
+    };
+}
+
+/**
+ * Switch to the viewed file's project.
+ * Call this when user confirms they want to switch after seeing mismatch prompt.
+ * @returns {Promise<{success: boolean}>}
+ */
+export async function switchToViewedProject() {
+    if (!viewedFileProject?.projectPath) {
+        return { success: false, message: 'No viewed file project' };
+    }
+    return openProject(viewedFileProject.projectPath, true, { skipFileOpen: true });
+}
 export function getNotebookSessionBinding(notebookPath) {
     return notebookSessionBindings.get(notebookPath) || 'main';
+}
+
+// File path utilities
+/**
+ * Check if a file path represents an untitled file
+ * @param {string} path - File path to check
+ * @returns {boolean}
+ */
+export function isUntitledFile(path) {
+    if (!path) return false;
+    const filename = path.split('/').pop() || '';
+    return /^Untitled-\d+\.md$/.test(filename);
 }
 
 // Interface mode getters
@@ -421,30 +548,43 @@ export async function openProject(projectPath, skipWarning = false, options = {}
 
         // Reset session state for new project BEFORE reconfiguring
         hasUnsavedState = false;
-        currentSessionName = 'main';
         notebookSessionBindings.clear();
 
-        // Switch to project venv if found (skip if warm - session already running)
-        if (isWarm) {
-            // Project is warm - kernel already running from pool
+        // Switch to project venv if found
+        if (isWarm && poolResult.session_id) {
+            // Project is warm - use the pool's session (already running with correct venv)
+            currentSessionName = poolResult.session_id;
             currentVenv = venv?.python_path || null;
             sessionMode = venv ? 'project' : 'scratch';
+            console.log(`[SessionState] Using warm session: ${currentSessionName}`);
             emit('kernel-ready', { session: currentSessionName, venv: currentVenv, warm: true });
         } else if (venv) {
+            // Cold project - need to reconfigure or create session
             currentVenv = venv.python_path;
             sessionMode = 'project';
 
-            // Reconfigure IPython session with new Python and cwd
-            // This restarts the kernel with the project's venv
-            // Do this async so user can start writing immediately
-            emit('kernel-initializing', { session: currentSessionName, venv: venv.python_path });
-            fetchJson('/api/ipython/reconfigure', {
+            // Get deterministic session ID from server (matches pool's MD5 hash)
+            // This ensures the session ID is reusable when project is warmed later
+            emit('kernel-initializing', { session: 'pending', venv: venv.python_path });
+
+            // Fetch session ID from server, then reconfigure kernel
+            fetchJson('/api/project/session-id', {
                 method: 'POST',
-                body: JSON.stringify({
-                    session: currentSessionName,
-                    python_path: venv.python_path,
-                    cwd: currentProject.path,
-                }),
+                body: JSON.stringify({ path: currentProject.path }),
+            }).then(sessionResult => {
+                const projectSessionId = sessionResult.session_id;
+                currentSessionName = projectSessionId;
+                console.log(`[SessionState] Using server session ID: ${currentSessionName}`);
+
+                // Now reconfigure the kernel with the correct session ID
+                return fetchJson('/api/ipython/reconfigure', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        session: currentSessionName,
+                        python_path: venv.python_path,
+                        cwd: currentProject.path,
+                    }),
+                });
             }).then(() => {
                 emit('kernel-ready', { session: currentSessionName, venv: venv.python_path });
                 // Warm this project for future switches
@@ -457,6 +597,10 @@ export async function openProject(projectPath, skipWarning = false, options = {}
                 console.error('[SessionState] Kernel reconfigure error:', err);
                 emit('kernel-error', { session: currentSessionName, error: err.message });
             });
+        } else {
+            // No venv - use main session as fallback
+            currentSessionName = 'main';
+            sessionMode = 'scratch';
         }
 
         // Emit project-opened immediately so UI can update and restore tabs
@@ -1334,10 +1478,52 @@ export function getSavedProjectTabs(projectPath) {
 }
 
 /**
+ * Check if a path is valid (belongs to the current user's home directory)
+ * This prevents issues from stale localStorage paths with wrong usernames
+ * @param {string} path - Path to validate
+ * @returns {boolean}
+ */
+export function isValidPath(path) {
+    if (!path) return false;
+
+    const homeDir = getHomeDirectory();
+    if (!homeDir) {
+        // Can't validate without home directory - accept cautiously
+        return true;
+    }
+
+    // Path should start with the user's home directory
+    // e.g., /home/maxime/... should match /home/maxime
+    if (path.startsWith(homeDir + '/') || path === homeDir) {
+        return true;
+    }
+
+    // Reject paths that look like they belong to a different user
+    // e.g., /home/user/... when home is /home/maxime
+    if (path.startsWith('/home/') || path.startsWith('/Users/')) {
+        console.warn(`[SessionState] Rejecting invalid path: ${path} (expected home: ${homeDir})`);
+        return false;
+    }
+
+    // Accept other paths (e.g., /tmp, /var, etc.)
+    return true;
+}
+
+/**
  * Get the last opened project path (for restore on refresh)
+ * Validates the path to ensure it belongs to the current user
  */
 export function getLastProjectPath() {
-    return localStorage.getItem(LAST_PROJECT_KEY);
+    const path = localStorage.getItem(LAST_PROJECT_KEY);
+
+    // Validate the path
+    if (path && !isValidPath(path)) {
+        console.warn(`[SessionState] Clearing invalid last project path: ${path}`);
+        localStorage.removeItem(LAST_PROJECT_KEY);
+        return null;
+    }
+
+    return path;
 }
 
 // Welcome mode management

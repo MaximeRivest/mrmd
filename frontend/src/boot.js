@@ -1276,6 +1276,8 @@ import { createProcessSidebar } from "/core/process-sidebar.js";
 import { toggleMode, HomeScreen } from "/core/compact-mode.js";
 import { initSelectionToolbar } from "/core/selection-toolbar.js";
 import * as VariablesPanel from "/core/variables-panel.js";
+import * as QuickPicker from "/core/quick-picker.js";
+import * as ProjectStatus from "/core/project-status.js";
 import { initEditorKeybindings } from "/core/editor-keybindings.js";
 import { KeybindingManager } from "/core/keybinding-manager.js";
 async function mount(svc, options = {}) {
@@ -1333,12 +1335,14 @@ function initEditor() {
     resolveImageUrl,
     onChange: (doc) => {
       if (!silentUpdate) {
-        rawTextarea.value = doc;
-        const currentPath = appState.currentFilePath;
-        if (currentPath) {
-          appState.updateFileContent(currentPath, doc, true);
-          scheduleAutosave();
-          updateFileIndicator();
+        const editorFilePath = editor?.getFilePath();
+        if (editorFilePath && appState.openFiles.has(editorFilePath)) {
+          rawTextarea.value = doc;
+          appState.updateFileContent(editorFilePath, doc, true);
+          if (appState.currentFilePath === editorFilePath) {
+            scheduleAutosave();
+            updateFileIndicator();
+          }
         }
       }
     },
@@ -1376,6 +1380,31 @@ function initEditor() {
         editor.applyExternalChange(newContent, origin);
       },
       getContent: () => editor.getDoc()
+    });
+    editor.tracker.setBeforeExecuteCallback(async ({ filePath }) => {
+      const mismatchInfo = SessionState2.getProjectMismatchInfo();
+      if (!mismatchInfo.isMismatch) {
+        return { proceed: true };
+      }
+      const userChoice = await showProjectMismatchDialog(
+        mismatchInfo.viewedProject || "Unknown",
+        mismatchInfo.activeProject || "Unknown"
+      );
+      if (userChoice === "switch") {
+        console.log(`[Codes] User chose to switch to ${mismatchInfo.viewedProject}`);
+        const result = await SessionState2.switchToViewedProject();
+        if (result.success) {
+          return { proceed: true };
+        } else {
+          showNotification("Error", "Failed to switch project", "error");
+          return { proceed: false, message: "Project switch failed" };
+        }
+      } else if (userChoice === "continue") {
+        console.log(`[Codes] User chose to continue with ${mismatchInfo.activeProject}`);
+        return { proceed: true };
+      } else {
+        return { proceed: false, message: "Cancelled by user" };
+      }
     });
   }
   initSelectionToolbar(container, {
@@ -1460,6 +1489,7 @@ async function setupYjsForFile(filePath) {
   currentYjsFilePath = filePath;
   const content = currentYjsDoc.getContent();
   console.log("[Yjs] Sync complete, content length:", content.length);
+  editor.setDoc(content);
   editor.setCollabExtensions(currentYjsDoc.getExtensions());
   currentYjsDoc.observe((event, transaction) => {
     const origin = transaction.origin;
@@ -1595,6 +1625,21 @@ async function initUIModules() {
   initSidebarResizer();
   initThemePicker();
   initModeToggle();
+  initFileIndicatorClick();
+}
+function initFileIndicatorClick() {
+  const indicator = document.querySelector(".current-file-indicator");
+  const nameEl = indicator?.querySelector(".file-name");
+  if (nameEl) {
+    nameEl.style.cursor = "pointer";
+    nameEl.title = "Click to rename or move file";
+    nameEl.addEventListener("click", () => {
+      const currentPath = appState.currentFilePath;
+      if (currentPath) {
+        openSavePickerForFile(currentPath, { copyMode: false, closeAfter: false });
+      }
+    });
+  }
 }
 async function initInterfaceMode() {
   const mainContainer = document.querySelector(".container");
@@ -1712,6 +1757,7 @@ async function initCollaboration() {
   }
 }
 function setupEventHandlers() {
+  console.log("[Codes] setupEventHandlers starting");
   SessionState2.on("file-modified", (path) => {
     fileTabs?.updateTabModified(path, true);
   });
@@ -1742,9 +1788,13 @@ function setupEventHandlers() {
     execStatusEl.textContent = message || "initializing...";
     execStatusEl.classList.add("kernel-switching");
   });
-  SessionState2.on("kernel-ready", () => {
+  SessionState2.on("kernel-ready", ({ session, venv }) => {
     execStatusEl.textContent = "ready";
     execStatusEl.classList.remove("kernel-switching");
+    if (session && ipython) {
+      console.log(`[Codes] Kernel ready - syncing IPython client to session: ${session}`);
+      ipython.setSession(session);
+    }
   });
   SessionState2.on("kernel-error", ({ error }) => {
     execStatusEl.textContent = "kernel error";
@@ -1763,6 +1813,7 @@ function setupEventHandlers() {
     try {
       await openFile(path);
       editor?.focus();
+      ProjectStatus.handleFileOpened(path);
     } catch (err) {
       console.error("[Codes] Failed to open file:", err);
       showNotification("Error", `Failed to open file: ${err}`, "error");
@@ -1808,6 +1859,15 @@ function setupEventHandlers() {
       HomeScreen.show();
     }
   });
+  console.log("[Codes] Registering untitled-file-exit-requested listener");
+  SessionState2.on("untitled-file-exit-requested", ({ path, showHomeAfter }) => {
+    console.log("[Codes] Untitled file exit requested:", path);
+    openSavePickerForFile(path, {
+      copyMode: false,
+      closeAfter: true
+    });
+  });
+  console.log("[Codes] Registered untitled-file-exit-requested listener");
   window.addEventListener("focus", () => {
     if (!services.collaboration.isConnected) {
       setTimeout(checkFileChanges, 100);
@@ -1823,7 +1883,18 @@ function setupEventHandlers() {
 function setupKeyboardShortcuts() {
   initEditorKeybindings({ getEditor: () => editor, statusEl: execStatusEl });
   KeybindingManager.handle("file:save", () => {
-    saveFile();
+    const currentPath = appState.currentFilePath;
+    if (currentPath && SessionState2.isUntitledFile(currentPath)) {
+      openSavePickerForFile(currentPath, { copyMode: false, closeAfter: false });
+    } else {
+      saveFile();
+    }
+  });
+  KeybindingManager.handle("file:save-as", () => {
+    const currentPath = appState.currentFilePath;
+    if (currentPath) {
+      openSavePickerForFile(currentPath, { copyMode: true, closeAfter: false });
+    }
   });
 }
 function initVariablesPanel() {
@@ -1863,6 +1934,17 @@ async function openFile(path, options = {}) {
     const filename = path.split("/").pop() || path;
     const isMarkdown = path.endsWith(".md");
     const shouldUseCollab = useCollaboration && isMarkdown && services.collaboration.isConnected;
+    if (isMarkdown && !options.background) {
+      const currentProject = SessionState2.getCurrentProject();
+      const fileDirPath = path.substring(0, path.lastIndexOf("/"));
+      const detectedProject = await detectProjectForPath(fileDirPath);
+      if (detectedProject && detectedProject.path !== currentProject?.path) {
+        console.log(`[Codes] File is from different project: ${detectedProject.name} (current: ${currentProject?.name || "none"})`);
+        SessionState2.setViewedFileProject(path, detectedProject.path, detectedProject.name);
+      } else {
+        SessionState2.setViewedFileProject(path, currentProject?.path || null, currentProject?.name || null);
+      }
+    }
     let diskContent = null;
     let diskMtime;
     if (options.cachedContent !== void 0) {
@@ -2101,6 +2183,111 @@ async function doAutosaveForFile(filePath) {
     }
   }
 }
+function openSavePickerForFile(filePath, options) {
+  const { copyMode, closeAfter } = options;
+  const resumeAutosave = pauseAutosave();
+  QuickPicker.openSaveTo({
+    filePath,
+    copyMode,
+    closeAfter,
+    onComplete: async (newPath, wasCopy, shouldClose) => {
+      resumeAutosave();
+      await handleSavePickerComplete(filePath, newPath, wasCopy, shouldClose);
+    },
+    onCancel: (reason) => {
+      resumeAutosave();
+      if (reason === "discard" && closeAfter) {
+        handleDiscardUntitled(filePath);
+      }
+    }
+  });
+}
+async function handleSavePickerComplete(oldPath, newPath, wasCopy, shouldClose) {
+  const isUntitled = SessionState2.isUntitledFile(oldPath);
+  if (wasCopy) {
+    showNotification("File copied", `Copied to ${newPath.split("/").pop()}`, "success");
+    return;
+  }
+  console.log("[Codes] Moving file:", oldPath, "->", newPath);
+  if (currentYjsFilePath === oldPath) {
+    cleanupYjsCollab();
+  }
+  const file = appState.openFiles.get(oldPath);
+  const scrollTop = file?.scrollTop || 0;
+  if (file) {
+    appState.openFiles.delete(oldPath);
+    appState.openFiles.set(newPath, {
+      ...file,
+      modified: false
+      // File was just saved
+    });
+    if (appState.currentFilePath === oldPath) {
+      appState.setCurrentFile(newPath);
+    }
+  }
+  SessionState2.removeOpenFile(oldPath);
+  SessionState2.addOpenFile(newPath, file?.content || "", false);
+  SessionState2.setActiveFile(newPath);
+  fileTabs?.renameTab(oldPath, newPath, newPath.split("/").pop() || "");
+  if (isUntitled) {
+    await SessionState2.removeRecentNotebook(oldPath);
+  }
+  await SessionState2.addRecentNotebook(newPath, newPath.split("/").pop()?.replace(".md", "") || "");
+  if (shouldClose) {
+    await handleTabClose(oldPath);
+    HomeScreen.show();
+    return;
+  }
+  const oldDir = oldPath.substring(0, oldPath.lastIndexOf("/"));
+  const newDir = newPath.substring(0, newPath.lastIndexOf("/"));
+  if (oldDir !== newDir) {
+    const newProject = await detectProjectForPath(newDir);
+    const currentProject = SessionState2.getCurrentProject();
+    if (newProject && (!currentProject || newProject.path !== currentProject.path)) {
+      console.log("[Codes] File moved to different project, switching:", newProject.path);
+      SessionState2.openProject(newProject.path);
+    }
+  }
+  if (newPath.endsWith(".md") && useCollaboration && services.collaboration.isConnected) {
+    await setupYjsForFile(newPath);
+  }
+  editor.setFilePath(newPath);
+  const filename = newPath.split("/").pop() || newPath;
+  document.title = `${filename} - MRMD`;
+  if (scrollTop) {
+    requestAnimationFrame(() => {
+      container.scrollTop = scrollTop;
+    });
+  }
+  updateFileIndicator();
+  showNotification("File saved", `Saved as ${newPath.split("/").pop()}`, "success");
+}
+async function detectProjectForPath(dirPath) {
+  try {
+    const response = await fetch("/api/project/detect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: dirPath })
+    });
+    if (response.ok) {
+      const data = await response.json();
+      if (data.is_project) {
+        return { path: data.project_path, name: data.project_name };
+      }
+    }
+  } catch (err) {
+    console.error("[Codes] Project detection failed:", err);
+  }
+  return null;
+}
+async function handleDiscardUntitled(filePath) {
+  services.documents.deleteFile(filePath).catch((err) => {
+    console.warn("[Codes] Failed to delete untitled file:", err);
+  });
+  await SessionState2.removeRecentNotebook(filePath);
+  await handleTabClose(filePath);
+  HomeScreen.show();
+}
 async function createNewNotebook(projectPath, initialContent) {
   const currentProject = appState.project;
   const scratchPath = SessionState2.getScratchPath();
@@ -2187,6 +2374,15 @@ async function handleTabSelect(path) {
 }
 async function handleBeforeTabClose(path) {
   const file = appState.openFiles.get(path);
+  if (SessionState2.isUntitledFile(path)) {
+    return new Promise((resolve) => {
+      openSavePickerForFile(path, {
+        copyMode: false,
+        closeAfter: true
+      });
+      resolve(false);
+    });
+  }
   if (file?.modified) {
     try {
       await services.documents.saveFile(path, file.content);
@@ -2195,6 +2391,7 @@ async function handleBeforeTabClose(path) {
       console.error("[Tabs] Error saving before close:", err);
     }
   }
+  return true;
 }
 async function handleTabClose(path) {
   terminalTabs?.closeTerminalsForFile(path);
@@ -2231,7 +2428,6 @@ async function handleProjectOpened(project) {
   browserRoot = project.path;
   localStorage.setItem("mrmd_browser_root", browserRoot);
   fileBrowser?.setRoot(project.path);
-  ipython.setSession("main");
   ipython.setProjectPath(project.path);
   ipython.setFigureDir(project.path + "/.mrmd/assets");
   setDocumentBasePath(project.path);
@@ -2333,6 +2529,99 @@ function showNotification(title, message, type = "info") {
   } else {
     console.log(`[Notification] ${type}: ${title} - ${message}`);
   }
+}
+async function showProjectMismatchDialog(viewedProject, activeProject) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "project-mismatch-dialog-overlay";
+    overlay.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+        `;
+    const dialog = document.createElement("div");
+    dialog.className = "project-mismatch-dialog";
+    dialog.style.cssText = `
+            background: var(--bg-primary, #1e1e1e);
+            border: 1px solid var(--border-color, #333);
+            border-radius: 8px;
+            padding: 20px;
+            max-width: 400px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        `;
+    dialog.innerHTML = `
+            <h3 style="margin: 0 0 12px 0; color: var(--text-primary, #fff);">
+                Project Mismatch
+            </h3>
+            <p style="margin: 0 0 16px 0; color: var(--text-secondary, #aaa); line-height: 1.5;">
+                This file is from <strong style="color: var(--accent-color, #4fc3f7);">${viewedProject}</strong>
+                but the kernel is running in <strong style="color: var(--accent-color, #4fc3f7);">${activeProject}</strong>.
+            </p>
+            <p style="margin: 0 0 20px 0; color: var(--text-secondary, #aaa); font-size: 0.9em;">
+                Would you like to switch to ${viewedProject}'s environment?
+            </p>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button class="mismatch-btn cancel" style="
+                    padding: 8px 16px;
+                    border: 1px solid var(--border-color, #444);
+                    background: transparent;
+                    color: var(--text-secondary, #aaa);
+                    border-radius: 4px;
+                    cursor: pointer;
+                ">Cancel</button>
+                <button class="mismatch-btn continue" style="
+                    padding: 8px 16px;
+                    border: 1px solid var(--border-color, #444);
+                    background: transparent;
+                    color: var(--text-primary, #fff);
+                    border-radius: 4px;
+                    cursor: pointer;
+                ">Run in ${activeProject}</button>
+                <button class="mismatch-btn switch" style="
+                    padding: 8px 16px;
+                    border: none;
+                    background: var(--accent-color, #4fc3f7);
+                    color: #000;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-weight: 500;
+                ">Switch to ${viewedProject}</button>
+            </div>
+        `;
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    const cleanup = () => {
+      document.body.removeChild(overlay);
+    };
+    dialog.querySelector(".mismatch-btn.cancel")?.addEventListener("click", () => {
+      cleanup();
+      resolve("cancel");
+    });
+    dialog.querySelector(".mismatch-btn.continue")?.addEventListener("click", () => {
+      cleanup();
+      resolve("continue");
+    });
+    dialog.querySelector(".mismatch-btn.switch")?.addEventListener("click", () => {
+      cleanup();
+      resolve("switch");
+    });
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        cleanup();
+        document.removeEventListener("keydown", handleKeyDown);
+        resolve("cancel");
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    dialog.querySelector(".mismatch-btn.switch")?.focus();
+  });
 }
 function initFileWatching() {
   externalChangeManager = new ExternalChangeHandlerManager();
@@ -4039,6 +4328,20 @@ var DocumentService = class {
       throw err;
     }
   }
+  async copyFile(srcPath, destPath) {
+    try {
+      await this._postJson("/api/file/copy", {
+        src_path: srcPath,
+        dest_path: destPath
+      });
+    } catch (err) {
+      console.error("[DocumentService] Error copying file:", err);
+      throw err;
+    }
+  }
+  async moveFile(srcPath, destPath) {
+    await this.renameFile(srcPath, destPath);
+  }
   markModified(path, modified) {
     const file = this._files.get(path);
     if (file && file.modified !== modified) {
@@ -4364,7 +4667,7 @@ function detectMode() {
   if (hostname === "atelier.codes" || hostname.includes("codes")) {
     return "codes";
   }
-  return "codes";
+  return "study";
 }
 function createServices() {
   return {

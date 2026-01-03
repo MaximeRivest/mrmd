@@ -122,6 +122,7 @@ export function createFileBrowser(container, options = {}) {
         onFileCreate = null,
         onFilesUploaded = null,
         getCollabClient = null,  // Optional: Function returning CollabClient instance for directory watching
+        onBeforeRender = null,   // Optional: Transform entries before rendering (entries, currentPath) => entries
     } = options;
 
     // State
@@ -697,10 +698,16 @@ export function createFileBrowser(container, options = {}) {
             `;
         }
 
+        // Apply onBeforeRender transformation if provided
+        let renderEntries = entries;
+        if (onBeforeRender) {
+            renderEntries = onBeforeRender(entries, currentPath);
+        }
+
         // Filter and score entries
         if (filter) {
             filteredEntries = [];
-            for (const entry of entries) {
+            for (const entry of renderEntries) {
                 const match = fuzzyMatch(entry.name, filter);
                 if (match) {
                     filteredEntries.push({ entry, ...match });
@@ -708,22 +715,31 @@ export function createFileBrowser(container, options = {}) {
             }
             filteredEntries.sort((a, b) => b.score - a.score);
         } else {
-            filteredEntries = entries.map(entry => ({ entry, score: 0, indices: [] }));
+            filteredEntries = renderEntries.map(entry => ({ entry, score: 0, indices: [] }));
         }
 
         // Clamp selection
         const maxIdx = filteredEntries.length - 1;
         if (selectedIndex > maxIdx) selectedIndex = Math.max(0, maxIdx);
 
-        // Render entries
+        // Render entries (with section header support)
+        let currentSection = null;
         filteredEntries.forEach((item, idx) => {
             const entry = item.entry;
+
+            // Render section header if this entry starts a new section
+            if (entry.sectionHeader && entry.sectionHeader !== currentSection) {
+                currentSection = entry.sectionHeader;
+                html += `<div class="fb-section-header">${esc(currentSection)}</div>`;
+            }
+
             const icon = getFileIcon(entry);
             const classes = ['fb-item'];
             if (entry.is_dir) classes.push('fb-dir');
             if (entry.ext === '.md' || entry.ext === '.markdown') classes.push('fb-md');
             if (idx === selectedIndex) classes.push('selected');
             if (entry.path === activeFilePath) classes.push('active');
+            if (entry.isRecentProject) classes.push('fb-recent-project');
 
             // Highlight matches
             let nameHtml;
@@ -733,10 +749,16 @@ export function createFileBrowser(container, options = {}) {
                 nameHtml = esc(entry.name);
             }
 
+            // Show location hint for recent projects
+            const locationHtml = entry.locationHint
+                ? `<span class="fb-location">${esc(entry.locationHint)}</span>`
+                : '';
+
             html += `
                 <div class="${classes.join(' ')}" data-path="${esc(entry.path)}" data-is-dir="${entry.is_dir}" data-idx="${idx}">
                     <span class="fb-icon">${icon}</span>
                     <span class="fb-name">${nameHtml}</span>
+                    ${locationHtml}
                 </div>
             `;
         });
@@ -1238,6 +1260,38 @@ function injectStyles() {
             background: rgba(122, 162, 247, 0.05);
             outline: 2px dashed rgba(122, 162, 247, 0.3);
             outline-offset: -4px;
+        }
+        /* Section headers for grouped entries */
+        .fb-section-header {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--muted);
+            opacity: 0.6;
+            padding: 12px 16px 4px 16px;
+            font-weight: 500;
+        }
+        .fb-section-header:not(:first-child) {
+            margin-top: 8px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            padding-top: 12px;
+        }
+        /* Location hint for recent projects */
+        .fb-location {
+            font-size: 10px;
+            color: var(--muted);
+            opacity: 0.5;
+            margin-left: auto;
+            padding-left: 8px;
+            flex-shrink: 0;
+        }
+        /* Recent project styling */
+        .fb-item.fb-recent-project {
+            color: var(--text);
+        }
+        .fb-item.fb-recent-project .fb-icon {
+            color: #7aa2f7;
+            opacity: 0.8;
         }
     `;
     document.head.appendChild(style);

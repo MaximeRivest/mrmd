@@ -260,6 +260,40 @@ export const zenEditorTheme = EditorView.theme({
     bottom: '0',
     background: 'var(--code-bg)',
     zIndex: '-1',
+  },
+
+  // Mermaid diagrams
+  '.cm-md-mermaid-line-hidden': {
+    display: 'none',
+  },
+  '.cm-mermaid-widget': {
+    display: 'block',
+    margin: '1em 0',
+    padding: '1em',
+    background: 'var(--surface)',
+    borderRadius: '8px',
+    border: '1px solid var(--border)',
+    overflow: 'auto',
+  },
+  '.cm-mermaid-loading': {
+    color: 'var(--text-muted)',
+    fontStyle: 'italic',
+    padding: '2em',
+    textAlign: 'center',
+  },
+  '.cm-mermaid-error': {
+    color: '#f85149',
+    padding: '1em',
+    background: 'rgba(248, 81, 73, 0.1)',
+    borderRadius: '4px',
+  },
+  '.cm-mermaid-svg': {
+    display: 'flex',
+    justifyContent: 'center',
+  },
+  '.cm-mermaid-svg svg': {
+    maxWidth: '100%',
+    height: 'auto',
     pointerEvents: 'none',
   },
   '.cm-md-code-fence': {
@@ -308,9 +342,69 @@ export const zenEditorTheme = EditorView.theme({
     color: 'var(--text-muted)',
     fontStyle: 'italic',
   },
+
+  // GitHub-style alerts (> [!NOTE], [!WARNING], etc.)
+  '.cm-md-alert': {
+    paddingLeft: '1.25em',
+    borderLeft: '3px solid',
+    fontStyle: 'normal',
+  },
+  '.cm-md-alert-note': {
+    borderLeftColor: '#58a6ff',
+    backgroundColor: 'rgba(88, 166, 255, 0.1)',
+  },
+  '.cm-md-alert-tip': {
+    borderLeftColor: '#3fb950',
+    backgroundColor: 'rgba(63, 185, 80, 0.1)',
+  },
+  '.cm-md-alert-important': {
+    borderLeftColor: '#a371f7',
+    backgroundColor: 'rgba(163, 113, 247, 0.1)',
+  },
+  '.cm-md-alert-warning': {
+    borderLeftColor: '#d29922',
+    backgroundColor: 'rgba(210, 153, 34, 0.1)',
+  },
+  '.cm-md-alert-caution': {
+    borderLeftColor: '#f85149',
+    backgroundColor: 'rgba(248, 81, 73, 0.1)',
+  },
+
+  // Alert title widget
+  '.cm-alert-title': {
+    fontWeight: '600',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '0.35em',
+  },
+  '.cm-alert-icon': {
+    fontSize: '1em',
+  },
+  '.cm-alert-text': {
+    textTransform: 'capitalize',
+  },
+  '.cm-alert-title-note .cm-alert-text': { color: '#58a6ff' },
+  '.cm-alert-title-tip .cm-alert-text': { color: '#3fb950' },
+  '.cm-alert-title-important .cm-alert-text': { color: '#a371f7' },
+  '.cm-alert-title-warning .cm-alert-text': { color: '#d29922' },
+  '.cm-alert-title-caution .cm-alert-text': { color: '#f85149' },
+
   '.cm-md-list-marker': {
     color: 'var(--text-light)',
   },
+
+  // Task list checkboxes (GFM task lists)
+  '.cm-task-checkbox': {
+    cursor: 'pointer',
+    width: '14px',
+    height: '14px',
+    margin: '0 0.25em 0 0',
+    verticalAlign: 'middle',
+    accentColor: 'var(--text)',
+    position: 'relative',
+    top: '-1px',
+  },
+
   '.cm-md-hr': {
     color: 'var(--border)',
   },
@@ -348,6 +442,32 @@ export const zenEditorTheme = EditorView.theme({
   '.cm-md-strikethrough': {
     textDecoration: 'line-through',
     opacity: '0.6',
+  },
+
+  // Highlight syntax (==text==)
+  '.cm-md-highlight': {
+    backgroundColor: 'rgba(255, 235, 59, 0.4)',
+    borderRadius: '2px',
+    padding: '0 2px',
+  },
+  '.cm-md-highlight-syntax': {
+    backgroundColor: 'rgba(255, 235, 59, 0.2)',
+  },
+
+  // Footnote references
+  '.cm-footnote-ref': {
+    color: 'var(--text-muted)',
+    fontSize: '0.85em',
+    verticalAlign: 'super',
+    cursor: 'help',
+  },
+
+  // Bare URL autolinks
+  '.cm-md-autolink': {
+    color: 'var(--link)',
+    textDecoration: 'underline',
+    textDecorationColor: 'var(--link)',
+    textUnderlineOffset: '2px',
   },
 
   // Widgets
@@ -486,24 +606,43 @@ export const zenEditorTheme = EditorView.theme({
     overflow: 'hidden !important',
   },
 
-  // Hidden lines for output blocks (when showing rendered widget)
-  '.cm-md-output-content-hidden': {
-    display: 'none !important',
-    height: '0 !important',
-    overflow: 'hidden !important',
+  // Output lines - same dimensions whether visible or hidden (no shift/flicker)
+  // Pattern matches table and image-output: use color:transparent NOT visibility:hidden
+  '.cm-md-output-line-hidden, .cm-md-output-line-visible': {
+    position: 'relative',
+    fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace !important",
+    fontSize: '0.85em',
+    lineHeight: '1.5',
   },
-
-  // Empty output line - hide text but keep line height for no flicker
-  '.cm-md-output-empty-line': {
+  // Hidden: text invisible but same space (uses color:transparent like table/image-output)
+  '.cm-md-output-line-hidden': {
     color: 'transparent !important',
     userSelect: 'none',
-    position: 'relative',
   },
-  '.cm-md-output-empty-line > span': {
+  '.cm-md-output-line-hidden > span': {
     visibility: 'hidden !important',
   },
-  '.cm-md-output-empty-line::before': {
+  '.cm-md-output-line-hidden::before': {
     display: 'none !important',
+  },
+  // Visible: text shown for editing - must cover the widget underneath
+  '.cm-md-output-line-visible': {
+    color: 'var(--text-muted)',
+    position: 'relative',
+    zIndex: '2',  // Higher than widget's z-index: 1
+    background: 'var(--background)',  // Opaque background to cover widget
+  },
+  '.cm-md-output-line-visible::before': {
+    content: '""',
+    position: 'absolute',
+    left: '-32px',
+    right: '0',
+    top: '0',
+    bottom: '0',
+    background: 'var(--surface)',
+    borderLeft: '2px solid var(--accent)',
+    zIndex: '-1',
+    pointerEvents: 'none',
   },
 
   // Empty output widget - absolute positioned to not affect layout
@@ -732,17 +871,28 @@ export const zenEditorTheme = EditorView.theme({
   // ============================================================================
   // Output Widget Styles
   // ============================================================================
+  // Output widget - absolutely positioned to overlay hidden lines (no flicker)
   '.cm-output-widget': {
-    display: 'block',
+    position: 'absolute',
+    left: '0',
+    right: '0',
+    zIndex: '1',
     fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
     fontSize: '0.9em',
     lineHeight: '1.4',
     padding: '8px 12px',
     background: 'var(--code-bg)',
     borderRadius: '4px',
-    margin: '4px 0',
-    position: 'relative',
     overflowX: 'auto',
+    color: 'var(--text) !important',  // Override inherited transparent from hidden parent
+  },
+  // Content inherits color, but ANSI spans keep their inline styles
+  '.cm-output-widget .cm-output-content': {
+    color: 'inherit',
+  },
+  // Hidden state when cursor is in block (editing mode)
+  '.cm-output-widget-hidden': {
+    display: 'none !important',
   },
   '.cm-output-status': {
     fontSize: '0.85em',
@@ -886,6 +1036,188 @@ export const zenEditorTheme = EditorView.theme({
     borderLeft: '2px solid var(--accent)',
     zIndex: '-1',
     pointerEvents: 'none',
+  },
+
+  // ============================================================================
+  // Table Widget Styles (Tufte-inspired: maximize data-ink ratio)
+  // ============================================================================
+
+  // Container for rendered table - absolutely positioned to overlay hidden lines
+  '.cm-table-widget': {
+    position: 'absolute',
+    left: '0',
+    right: '0',
+    zIndex: '1',
+    background: 'var(--background)',
+    padding: '0.5em 0',
+  },
+
+  // The table element itself - MUST have display:table inside CM widgets
+  '.cm-table': {
+    display: 'table',
+    borderCollapse: 'collapse',
+    width: 'auto',
+    minWidth: '200px',
+    fontSize: '0.95em',
+    fontFamily: 'inherit',
+    lineHeight: '1.5',
+  },
+  '.cm-table thead': {
+    display: 'table-header-group',
+  },
+  '.cm-table tbody': {
+    display: 'table-row-group',
+  },
+  '.cm-table tr': {
+    display: 'table-row',
+  },
+  '.cm-table th, .cm-table td': {
+    display: 'table-cell',
+  },
+
+  // Header cells - subtle weight, strong bottom border
+  '.cm-table th': {
+    padding: '0.5em 1em',
+    textAlign: 'left',
+    fontWeight: '600',
+    color: 'var(--text)',
+    borderBottom: '2px solid var(--text-muted)',
+    whiteSpace: 'nowrap',
+  },
+
+  // Data cells - minimal styling (Rams: less but better)
+  '.cm-table td': {
+    padding: '0.5em 1em',
+    textAlign: 'left',
+    color: 'var(--text)',
+    borderBottom: '1px solid var(--border)',
+  },
+
+  // Last row has no border (cleaner look)
+  '.cm-table tbody tr:last-child td': {
+    borderBottom: 'none',
+  },
+
+  // Alignment classes
+  '.cm-table-align-left': {
+    textAlign: 'left',
+  },
+  '.cm-table-align-center': {
+    textAlign: 'center',
+  },
+  '.cm-table-align-right': {
+    textAlign: 'right',
+  },
+
+  // Numeric cells - tabular numbers for alignment (Tufte would approve)
+  '.cm-table-cell-numeric': {
+    fontFeatureSettings: '"tnum" 1',
+    fontVariantNumeric: 'tabular-nums',
+  },
+
+  // Decimal-aligned cells (Tufte's true requirement: align on decimal point)
+  // Uses inline spans within table-cell to avoid breaking table layout
+  '.cm-table-cell-decimal-aligned': {
+    textAlign: 'right',
+    fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
+    fontSize: '0.9em',
+    whiteSpace: 'nowrap',
+  },
+  '.cm-table-decimal-int': {
+    display: 'inline-block',
+    textAlign: 'right',
+  },
+  '.cm-table-decimal-frac': {
+    display: 'inline-block',
+    textAlign: 'left',
+  },
+
+  // Table caption (Tufte: every table needs context)
+  // Uses semantic <caption> element with caption-side for positioning
+  '.cm-table-caption': {
+    captionSide: 'top',
+    fontSize: '0.875em',
+    color: 'var(--text-muted)',
+    fontStyle: 'italic',
+    textAlign: 'left',
+    padding: '0.5em 0',
+    lineHeight: '1.4',
+  },
+
+  // Caption below table (scientific/academic style)
+  '.cm-table-caption-below': {
+    captionSide: 'bottom',
+    paddingTop: '0.75em',
+    paddingBottom: '0',
+  },
+
+  // Inline formatting within table cells
+  '.cm-table-cell code': {
+    fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
+    fontSize: '0.85em',
+    padding: '0.1em 0.3em',
+    background: 'var(--surface)',
+    borderRadius: '3px',
+  },
+  '.cm-table-cell strong': {
+    fontWeight: '600',
+  },
+  '.cm-table-cell em': {
+    fontStyle: 'italic',
+  },
+  '.cm-table-cell s': {
+    textDecoration: 'line-through',
+    opacity: '0.7',
+  },
+
+  // Hover effect - subtle highlight
+  '.cm-table tbody tr:hover td': {
+    background: 'var(--surface)',
+  },
+
+  // Spanning cells (colspan/rowspan) - Tufte Markdown extension
+  '.cm-table-cell-spanning': {
+    verticalAlign: 'middle',
+  },
+
+  // Alignment classes including decimal (Tufte Markdown)
+  '.cm-table-align-decimal': {
+    textAlign: 'right',
+  },
+
+  // Table line decorations for editing mode
+  '.cm-md-table-line-visible': {
+    position: 'relative',
+    fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace !important",
+    fontSize: '0.9em',
+    lineHeight: '1.5',
+    color: 'var(--text-muted)',
+  },
+  '.cm-md-table-line-visible::before': {
+    content: '""',
+    position: 'absolute',
+    left: '-32px',
+    right: '-32px',
+    top: '0',
+    bottom: '0',
+    background: 'var(--surface)',
+    borderLeft: '2px solid var(--accent)',
+    zIndex: '-1',
+    pointerEvents: 'none',
+  },
+
+  // Hidden table lines - text invisible, but lines keep their height
+  // Widget overlays them with absolute positioning
+  '.cm-md-table-line-hidden': {
+    position: 'relative',
+    color: 'transparent !important',
+    userSelect: 'none',
+  },
+  '.cm-md-table-line-hidden > span': {
+    visibility: 'hidden !important',
+  },
+  '.cm-md-table-line-hidden::selection, .cm-md-table-line-hidden *::selection': {
+    background: 'transparent !important',
   },
 
 });

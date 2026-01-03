@@ -22,6 +22,8 @@ export interface OutputWidgetConfig {
   maxVisibleLines?: number;
   /** Whether output can be copied on click */
   copyOnClick?: boolean;
+  /** Whether widget is hidden (cursor in block) */
+  hidden?: boolean;
 }
 
 /**
@@ -39,13 +41,17 @@ export class OutputWidget extends WidgetType {
   eq(other: OutputWidget): boolean {
     return (
       other.content === this.content &&
-      other.execId === this.execId
+      other.execId === this.execId &&
+      other.config.hidden === this.config.hidden
     );
   }
 
   toDOM(view: EditorView): HTMLElement {
     const container = document.createElement('div');
     container.className = 'cm-output-widget';
+    if (this.config.hidden) {
+      container.classList.add('cm-output-widget-hidden');
+    }
     container.dataset.execId = this.execId;
 
     // Parse content for status line
@@ -278,17 +284,23 @@ export function createOutputWidget(
  * Widget for empty output blocks - shows subtle "No output" indicator
  */
 export class EmptyOutputWidget extends WidgetType {
-  constructor(readonly execId: string) {
+  constructor(
+    readonly execId: string,
+    readonly hidden: boolean = false
+  ) {
     super();
   }
 
   eq(other: EmptyOutputWidget): boolean {
-    return other.execId === this.execId;
+    return other.execId === this.execId && other.hidden === this.hidden;
   }
 
   toDOM(): HTMLElement {
     const container = document.createElement('div');
     container.className = 'cm-empty-output-widget';
+    if (this.hidden) {
+      container.classList.add('cm-output-widget-hidden');
+    }
     container.dataset.execId = this.execId;
     container.textContent = 'No output';
     return container;

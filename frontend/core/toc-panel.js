@@ -117,9 +117,10 @@ export function createTOCPanel(options = {}) {
     wrapper.className = 'toc-panel-content';
 
     // Get current markdown from editor
+    // Support both CM6 editor (getDoc) and legacy editor (getContent)
     let markdown = '';
-    if (editorRef && typeof editorRef.getContent === 'function') {
-        markdown = editorRef.getContent();
+    if (editorRef) {
+        markdown = (editorRef.getDoc?.() ?? editorRef.getContent?.()) || '';
     }
 
     // Use cached headings if markdown hasn't changed

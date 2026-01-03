@@ -52,8 +52,8 @@ function detectMode(): AppMode {
         return 'codes';
     }
 
-    // 3. Default to codes (developer mode)
-    return 'codes';
+    // 3. Default to study (compact mode)
+    return 'study';
 }
 
 // ============================================================================

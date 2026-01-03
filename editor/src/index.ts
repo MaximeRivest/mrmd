@@ -24,6 +24,32 @@ export {
   extractLanguage,
 } from './core/code-blocks';
 
+// Table utilities (with Tufte Markdown extensions)
+export {
+  parseTable,
+  parseTableRow,
+  parseAlignments,
+  parseDelimiterRow,
+  splitTableRow,
+  isTableLine,
+  isTableDelimiter,
+  isColspanMarker,
+  isRowspanMarker,
+  getTableAtPosition,
+  getAllTables,
+  isNumericContent,
+  normalizeTable,
+  getEffectiveAlignment,
+} from './core/tables';
+export type {
+  ColumnAlignment,
+  ColumnWidth,
+  TableCell,
+  TableRow,
+  ParsedTable,
+  TableBlockInfo,
+} from './core/tables';
+
 // Execution
 export type {
   Executor,
@@ -35,7 +61,7 @@ export type {
 } from './execution/executor';
 export { MockExecutor } from './execution/executor';
 export { ExecutionTracker } from './execution/tracker';
-export type { FileStateCallbacks, DocumentUpdateCallbacks } from './execution/tracker';
+export type { FileStateCallbacks, DocumentUpdateCallbacks, BeforeExecuteCallback, BeforeExecuteResult } from './execution/tracker';
 
 // Execution Queue
 export { ExecutionQueue, createExecutionQueue } from './execution/queue';
@@ -86,6 +112,8 @@ export { OutputWidget, createOutputWidget, outputWidgetStyles } from './widgets/
 export type { OutputWidgetConfig } from './widgets/output';
 export { CellStatusWidget, getCellState, cellStatusStyles } from './widgets/cell-status';
 export type { CellState } from './widgets/cell-status';
+export { TableWidget, createTableWidget, generateTableId } from './widgets/table';
+export type { TableWidgetConfig } from './widgets/table';
 
 // Cells (code cell options parsing)
 export { parseCellOptions, parseRenderedOptions, serializeCellOptions } from './cells';

@@ -23,7 +23,14 @@ import {
   EmptyOutputWidget,
   ImageOutputWidget,
   parseImageMarkdown,
+  TableWidget,
+  generateTableId,
+  TaskCheckboxWidget,
+  AlertTitleWidget,
+  MermaidWidget,
+  FootnoteRefWidget,
 } from '../widgets';
+import { parseTable, isTableLine, isTableDelimiter } from '../core/tables';
 import { parseCellOptions, parseRenderedOptions } from '../cells/options';
 import { DEFAULT_CELL_OPTIONS } from '../cells/types';
 import type { ExecutionTracker } from '../execution/tracker';
@@ -284,6 +291,7 @@ export function markdownDecorations(
               const isOutput = isOutputBlock(firstLineText);
               const isHtmlRendered = isHtmlRenderedBlock(firstLineText);
               const isImageOutput = isImageOutputBlock(firstLineText);
+              const isMermaid = lang === 'mermaid';
 
               // Handle output blocks with ANSI rendering
               if (isOutput) {
@@ -297,73 +305,41 @@ export function markdownDecorations(
                 // Check if there's content (more than just the fences)
                 const hasContentLines = endLine.number > startLine.number + 1;
 
-                if (hasContentLines && !cursorInBlock) {
-                  // Cursor NOT in block: hide content lines and show rendered widget
-                  // Add line decoration for opening fence
+                // All lines always take same space - only text visibility changes (no shift)
+                // This prevents flicker during drag-select operations
+                for (let i = startLine.number; i <= endLine.number; i++) {
+                  const line = view.state.doc.line(i);
                   items.push({
-                    from: startLine.from,
+                    from: line.from,
                     type: 'line',
-                    class: 'cm-md-output-block-line',
+                    class: cursorInBlock
+                      ? 'cm-md-output-line-visible'   // Text visible for editing
+                      : 'cm-md-output-line-hidden',   // Text invisible, same height
                   });
+                }
 
-                  // Hide content lines (between fences) with CSS
-                  for (let i = startLine.number + 1; i < endLine.number; i++) {
-                    const line = view.state.doc.line(i);
-                    items.push({
-                      from: line.from,
-                      type: 'line',
-                      class: 'cm-md-output-content-hidden',
-                    });
-                  }
-
-                  // Add line decoration for closing fence
-                  items.push({
-                    from: endLine.from,
-                    type: 'line',
-                    class: 'cm-md-output-block-line',
-                  });
-
+                // ALWAYS show widget (stable layout - same as image output pattern)
+                // When editing, widget is hidden via CSS class
+                if (hasContentLines) {
                   // Extract content for the widget (lines between fences)
                   const contentStart = startLine.to + 1;
                   const contentEnd = endLine.from;
                   const content = view.state.sliceDoc(contentStart, contentEnd);
 
                   // Add OutputWidget after opening fence line
+                  // Pass cursorInBlock to control visibility via CSS class
                   items.push({
                     from: startLine.to,
                     type: 'widget',
-                    widget: new OutputWidget(content, execId),
-                  });
-                } else if (!hasContentLines && !cursorInBlock) {
-                  // Empty block, cursor NOT in block: show "no output" widget
-                  // Keep BOTH fence lines (invisible text) so vertical space matches markdown
-                  items.push({
-                    from: startLine.from,
-                    type: 'line',
-                    class: 'cm-md-output-block-line cm-md-output-empty-line',
-                  });
-                  items.push({
-                    from: endLine.from,
-                    type: 'line',
-                    class: 'cm-md-output-block-line cm-md-output-empty-line',
-                  });
-
-                  // Add EmptyOutputWidget after opening fence (positioned to not add space)
-                  items.push({
-                    from: startLine.to,
-                    type: 'widget',
-                    widget: new EmptyOutputWidget(execId),
+                    widget: new OutputWidget(content, execId, { hidden: cursorInBlock }),
                   });
                 } else {
-                  // Cursor IN block: show raw text for editing
-                  for (let i = startLine.number; i <= endLine.number; i++) {
-                    const line = view.state.doc.line(i);
-                    items.push({
-                      from: line.from,
-                      type: 'line',
-                      class: 'cm-md-output-block-line',
-                    });
-                  }
+                  // Empty block: show "no output" widget
+                  items.push({
+                    from: startLine.to,
+                    type: 'widget',
+                    widget: new EmptyOutputWidget(execId, cursorInBlock),
+                  });
                 }
               } else if (isImageOutput) {
                 // Handle image-output blocks (matplotlib figures, etc.)
@@ -414,6 +390,42 @@ export function markdownDecorations(
                       ),
                     });
                   }
+                }
+              } else if (isMermaid) {
+                // Handle Mermaid diagram blocks
+                const cursorInBlock = cursorLine >= startLine.number && cursorLine <= endLine.number;
+
+                // Extract diagram code
+                const contentStart = startLine.to + 1;
+                const contentEnd = endLine.from;
+                const mermaidCode = view.state.sliceDoc(contentStart, contentEnd).trim();
+
+                if (cursorInBlock) {
+                  // Show source for editing
+                  for (let i = startLine.number; i <= endLine.number; i++) {
+                    const line = view.state.doc.line(i);
+                    items.push({
+                      from: line.from,
+                      type: 'line',
+                      class: 'cm-md-code-block-line',
+                    });
+                  }
+                } else if (mermaidCode) {
+                  // Hide source and show rendered diagram
+                  for (let i = startLine.number; i <= endLine.number; i++) {
+                    const line = view.state.doc.line(i);
+                    items.push({
+                      from: line.from,
+                      type: 'line',
+                      class: 'cm-md-mermaid-line-hidden',
+                    });
+                  }
+
+                  items.push({
+                    from: startLine.to,
+                    type: 'widget',
+                    widget: new MermaidWidget(mermaidCode),
+                  });
                 }
               } else {
                 // Non-output code blocks: add line decorations
@@ -569,14 +581,156 @@ export function markdownDecorations(
               }
             }
 
-            // Blockquotes
+            // Blockquotes (with GitHub-style alerts support)
             if (node.name === 'Blockquote') {
               const startLine = view.state.doc.lineAt(node.from);
               const endLine = view.state.doc.lineAt(node.to);
+
+              // Check for GitHub-style alert marker: > [!NOTE], [!TIP], etc.
+              const firstLineText = startLine.text;
+              const alertMatch = firstLineText.match(/^>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i);
+              const alertType = alertMatch ? alertMatch[1].toLowerCase() : null;
+
               for (let i = startLine.number; i <= endLine.number; i++) {
                 const line = view.state.doc.line(i);
-                items.push({ from: line.from, type: 'line', class: 'cm-md-blockquote-line' });
+                if (alertType) {
+                  // Apply alert-specific styling
+                  items.push({ from: line.from, type: 'line', class: `cm-md-alert cm-md-alert-${alertType}` });
+                } else {
+                  items.push({ from: line.from, type: 'line', class: 'cm-md-blockquote-line' });
+                }
               }
+
+              // Hide the alert marker [!TYPE] when not on that line
+              if (alertType && startLine.number !== cursorLine) {
+                const markerStart = startLine.from + firstLineText.indexOf('[!');
+                const markerEnd = startLine.from + firstLineText.indexOf(']') + 1;
+                items.push({
+                  from: markerStart,
+                  to: markerEnd,
+                  type: 'replace',
+                  widget: new AlertTitleWidget(alertType),
+                });
+              }
+            }
+
+            // Tables (GFM)
+            if (node.name === 'Table') {
+              const startLine = view.state.doc.lineAt(node.from);
+              const endLine = view.state.doc.lineAt(node.to);
+
+              // Check if cursor is inside the table
+              const cursorInTable = cursorLine >= startLine.number && cursorLine <= endLine.number;
+
+              // Generate stable table ID from position
+              const tableId = generateTableId(node.from);
+
+              // Detect caption: look for italic paragraph before OR after table
+              // Format: *Caption text* or _Caption text_ on its own line
+              // Tufte Markdown: caption can be above (default) or below (scientific style)
+              let captionAbove: string | undefined;
+              let captionBelow: string | undefined;
+              let captionAboveLine: number | undefined;
+              let captionBelowLine: number | undefined;
+
+              // Check for caption BEFORE table
+              if (startLine.number > 1) {
+                const prevLine = view.state.doc.line(startLine.number - 1);
+                const prevText = prevLine.text.trim();
+                // Check for italic-wrapped text (entire line is italic)
+                const italicMatch = prevText.match(/^[*_](.+)[*_]$/);
+                if (italicMatch && !prevText.includes('|')) {
+                  captionAbove = italicMatch[1];
+                  captionAboveLine = startLine.number - 1;
+                }
+              }
+
+              // Check for caption AFTER table
+              if (endLine.number < view.state.doc.lines) {
+                const nextLine = view.state.doc.line(endLine.number + 1);
+                const nextText = nextLine.text.trim();
+                // Check for italic-wrapped text (entire line is italic)
+                const italicMatch = nextText.match(/^[*_](.+)[*_]$/);
+                if (italicMatch && !nextText.includes('|')) {
+                  captionBelow = italicMatch[1];
+                  captionBelowLine = endLine.number + 1;
+                }
+              }
+
+              // Use caption above if present, otherwise below
+              const caption = captionAbove || captionBelow;
+              const captionLine = captionAbove ? captionAboveLine : captionBelowLine;
+              const captionPosition: 'above' | 'below' | undefined = captionAbove ? 'above' : (captionBelow ? 'below' : undefined);
+
+              if (cursorInTable) {
+                // Cursor in table: show raw markdown with subtle styling
+                for (let i = startLine.number; i <= endLine.number; i++) {
+                  const line = view.state.doc.line(i);
+                  items.push({
+                    from: line.from,
+                    type: 'line',
+                    class: 'cm-md-table-line-visible',
+                  });
+                }
+              } else {
+                // Cursor outside: hide markdown, show rendered widget
+                // Extract table lines for parsing
+                const lines: string[] = [];
+                for (let i = startLine.number; i <= endLine.number; i++) {
+                  lines.push(view.state.doc.line(i).text);
+                }
+
+                // Parse the table
+                const parsed = parseTable(lines, node.from, node.to);
+
+                if (parsed && parsed.rows.length > 0) {
+                  // Hide all table lines (text invisible but lines remain for structure)
+                  for (let i = startLine.number; i <= endLine.number; i++) {
+                    const line = view.state.doc.line(i);
+                    items.push({
+                      from: line.from,
+                      type: 'line',
+                      class: 'cm-md-table-line-hidden',
+                    });
+                  }
+
+                  // Hide caption line too (it's rendered in the widget)
+                  if (captionLine) {
+                    const capLine = view.state.doc.line(captionLine);
+                    items.push({
+                      from: capLine.from,
+                      type: 'line',
+                      class: 'cm-md-table-line-hidden',
+                    });
+                  }
+
+                  // Add rendered table widget after first line
+                  // Widget is positioned absolutely to overlay hidden lines
+                  items.push({
+                    from: startLine.to,
+                    type: 'widget',
+                    widget: new TableWidget(parsed, tableId, {
+                      autoAlignNumbers: true,
+                      decimalAlignment: true, // Tufte's requirement: align on decimal point
+                      renderInlineMarkdown: true,
+                      caption,
+                      captionPosition,
+                    }),
+                  });
+                } else {
+                  // Parsing failed - show raw markdown with basic styling
+                  for (let i = startLine.number; i <= endLine.number; i++) {
+                    const line = view.state.doc.line(i);
+                    items.push({
+                      from: line.from,
+                      type: 'line',
+                      class: 'cm-md-table-line-visible',
+                    });
+                  }
+                }
+              }
+
+              return false; // Don't recurse into table children
             }
 
             // Quote marker
@@ -592,6 +746,31 @@ export function markdownDecorations(
                 type: 'mark',
                 class: 'cm-md-list-marker',
               });
+            }
+
+            // Task list checkboxes: - [ ] or - [x]
+            if (node.name === 'ListItem') {
+              const itemText = view.state.doc.sliceString(node.from, Math.min(node.from + 10, node.to));
+              // Match: marker + space + [ ] or [x] or [X]
+              const taskMatch = itemText.match(/^[-*+]\s+\[([ xX])\]/);
+              if (taskMatch) {
+                const isChecked = taskMatch[1].toLowerCase() === 'x';
+                // Find the position of '[' in the document
+                const bracketOffset = itemText.indexOf('[');
+                const bracketPos = node.from + bracketOffset;
+
+                // Don't render widget if cursor is on this line
+                const itemLine = view.state.doc.lineAt(node.from);
+                if (itemLine.number !== cursorLine) {
+                  // Hide the [ ], [x], or [X] text
+                  items.push({
+                    from: bracketPos,
+                    to: bracketPos + 3,
+                    type: 'replace',
+                    widget: new TaskCheckboxWidget(isChecked, bracketPos),
+                  });
+                }
+              }
             }
 
             // Horizontal rule
@@ -670,6 +849,175 @@ export function markdownDecorations(
           },
         });
 
+        // =====================================================================
+        // Manual Table Detection (Tufte Markdown Fallback)
+        // =====================================================================
+        // The GFM parser only recognizes standard delimiter rows (:?-+:?)
+        // Our Tufte Markdown extensions (|:--{30%}|, |---.|) break recognition.
+        // This fallback scans for tables the syntax tree missed.
+
+        // Track positions already processed as tables
+        const processedTableRanges: Array<{ from: number; to: number }> = [];
+        for (const item of items) {
+          if (item.class === 'cm-md-table-line-hidden' || item.class === 'cm-md-table-line-visible') {
+            // Extract line range - item.from is line start
+            const line = view.state.doc.lineAt(item.from);
+            const existing = processedTableRanges.find(r => r.from <= line.from && r.to >= line.to);
+            if (!existing) {
+              processedTableRanges.push({ from: line.from, to: line.to });
+            }
+          }
+        }
+
+        // Helper to check if a position is already processed
+        const isProcessedAsTable = (from: number, to: number): boolean => {
+          return processedTableRanges.some(r => from >= r.from && to <= r.to);
+        };
+
+        // Scan for potential tables line by line
+        let lineNum = 1;
+        while (lineNum <= view.state.doc.lines) {
+          const line = view.state.doc.line(lineNum);
+
+          // Skip if outside viewport
+          if (line.to < view.viewport.from || line.from > view.viewport.to) {
+            lineNum++;
+            continue;
+          }
+
+          // Check if this looks like a table header row
+          if (isTableLine(line.text)) {
+            // Look for delimiter on next line
+            if (lineNum < view.state.doc.lines) {
+              const nextLine = view.state.doc.line(lineNum + 1);
+
+              if (isTableDelimiter(nextLine.text)) {
+                // Found a potential table! Collect all table lines
+                const tableStartLine = lineNum;
+                let tableEndLine = lineNum + 1; // At least header + delimiter
+
+                // Continue collecting data rows
+                while (tableEndLine < view.state.doc.lines) {
+                  const checkLine = view.state.doc.line(tableEndLine + 1);
+                  if (isTableLine(checkLine.text)) {
+                    tableEndLine++;
+                  } else {
+                    break;
+                  }
+                }
+
+                const tableStart = view.state.doc.line(tableStartLine).from;
+                const tableEnd = view.state.doc.line(tableEndLine).to;
+
+                // Skip if already processed by syntax tree
+                if (!isProcessedAsTable(tableStart, tableEnd)) {
+                  const startLine = view.state.doc.line(tableStartLine);
+                  const endLine = view.state.doc.line(tableEndLine);
+
+                  // Check if cursor is inside the table
+                  const cursorInTable = cursorLine >= tableStartLine && cursorLine <= tableEndLine;
+
+                  // Generate stable table ID from position
+                  const tableId = generateTableId(tableStart);
+
+                  // Detect captions (before and after)
+                  let captionAbove: string | undefined;
+                  let captionBelow: string | undefined;
+                  let captionAboveLineNum: number | undefined;
+                  let captionBelowLineNum: number | undefined;
+
+                  if (tableStartLine > 1) {
+                    const prevLine = view.state.doc.line(tableStartLine - 1);
+                    const prevText = prevLine.text.trim();
+                    const italicMatch = prevText.match(/^[*_](.+)[*_]$/);
+                    if (italicMatch && !prevText.includes('|')) {
+                      captionAbove = italicMatch[1];
+                      captionAboveLineNum = tableStartLine - 1;
+                    }
+                  }
+
+                  if (tableEndLine < view.state.doc.lines) {
+                    const nextLine = view.state.doc.line(tableEndLine + 1);
+                    const nextText = nextLine.text.trim();
+                    const italicMatch = nextText.match(/^[*_](.+)[*_]$/);
+                    if (italicMatch && !nextText.includes('|')) {
+                      captionBelow = italicMatch[1];
+                      captionBelowLineNum = tableEndLine + 1;
+                    }
+                  }
+
+                  const caption = captionAbove || captionBelow;
+                  const captionLineNum = captionAbove ? captionAboveLineNum : captionBelowLineNum;
+                  const captionPosition: 'above' | 'below' | undefined = captionAbove ? 'above' : (captionBelow ? 'below' : undefined);
+
+                  // Extract table lines for parsing
+                  const lines: string[] = [];
+                  for (let i = tableStartLine; i <= tableEndLine; i++) {
+                    lines.push(view.state.doc.line(i).text);
+                  }
+
+                  // Parse the table
+                  const parsed = parseTable(lines, tableStart, tableEnd);
+
+                  if (cursorInTable) {
+                    // Cursor in table: show raw markdown with subtle styling
+                    for (let i = tableStartLine; i <= tableEndLine; i++) {
+                      const tableLine = view.state.doc.line(i);
+                      items.push({
+                        from: tableLine.from,
+                        type: 'line',
+                        class: 'cm-md-table-line-visible',
+                      });
+                    }
+                  } else if (parsed && parsed.rows.length > 0) {
+                    // Hide all table lines
+                    for (let i = tableStartLine; i <= tableEndLine; i++) {
+                      const tableLine = view.state.doc.line(i);
+                      items.push({
+                        from: tableLine.from,
+                        type: 'line',
+                        class: 'cm-md-table-line-hidden',
+                      });
+                    }
+
+                    // Hide caption line too
+                    if (captionLineNum) {
+                      const capLine = view.state.doc.line(captionLineNum);
+                      items.push({
+                        from: capLine.from,
+                        type: 'line',
+                        class: 'cm-md-table-line-hidden',
+                      });
+                    }
+
+                    // Add rendered table widget
+                    items.push({
+                      from: startLine.to,
+                      type: 'widget',
+                      widget: new TableWidget(parsed, tableId, {
+                        autoAlignNumbers: true,
+                        decimalAlignment: true,
+                        renderInlineMarkdown: true,
+                        caption,
+                        captionPosition,
+                      }),
+                    });
+                  }
+
+                  // Track this range as processed
+                  processedTableRanges.push({ from: tableStart, to: tableEnd });
+                }
+
+                // Skip to end of table
+                lineNum = tableEndLine + 1;
+                continue;
+              }
+            }
+          }
+
+          lineNum++;
+        }
+
         // Find math blocks ($$...$$)
         const text = view.state.doc.toString();
         const mathRegex = /\$\$([^$]+)\$\$/g;
@@ -682,6 +1030,77 @@ export function markdownDecorations(
           if (to >= view.viewport.from && from <= view.viewport.to) {
             items.push({ from, to, type: 'mark', class: 'cm-md-widget-syntax' });
             items.push({ from: to, type: 'widget', widget: new MathWidget(latex) });
+          }
+        }
+
+        // Find highlight syntax (==text==)
+        const highlightRegex = /==([^=]+)==/g;
+        while ((match = highlightRegex.exec(text)) !== null) {
+          const from = match.index;
+          const to = from + match[0].length;
+
+          if (to >= view.viewport.from && from <= view.viewport.to) {
+            // Check if on current line - show syntax if so
+            const matchLine = view.state.doc.lineAt(from);
+            if (matchLine.number === cursorLine) {
+              items.push({ from, to, type: 'mark', class: 'cm-md-highlight-syntax' });
+            } else {
+              // Hide the == markers and highlight the content
+              items.push({ from, to: from + 2, type: 'mark', class: 'cm-md-hidden' });
+              items.push({ from: from + 2, to: to - 2, type: 'mark', class: 'cm-md-highlight' });
+              items.push({ from: to - 2, to, type: 'mark', class: 'cm-md-hidden' });
+            }
+          }
+        }
+
+        // Find footnote references [^1], [^note], etc.
+        const footnoteRefRegex = /\[\^([^\]]+)\]/g;
+        while ((match = footnoteRefRegex.exec(text)) !== null) {
+          const from = match.index;
+          const to = from + match[0].length;
+          const footnoteId = match[1];
+
+          // Skip footnote definitions (lines starting with [^id]:)
+          const lineStart = view.state.doc.lineAt(from).from;
+          const linePrefix = view.state.sliceDoc(lineStart, from);
+          if (linePrefix.trim() === '') {
+            // This is a definition, not a reference
+            continue;
+          }
+
+          if (to >= view.viewport.from && from <= view.viewport.to) {
+            const matchLine = view.state.doc.lineAt(from);
+            if (matchLine.number !== cursorLine) {
+              // Render as superscript
+              items.push({
+                from,
+                to,
+                type: 'replace',
+                widget: new FootnoteRefWidget(footnoteId),
+              });
+            }
+          }
+        }
+
+        // Find bare URLs (not already in markdown links)
+        // Pattern: https://... or http://... not preceded by ]( or ](
+        const urlRegex = /(?<![(\[])https?:\/\/[^\s<>)\]]+/g;
+        while ((match = urlRegex.exec(text)) !== null) {
+          const from = match.index;
+          const to = from + match[0].length;
+          const url = match[0];
+
+          if (to >= view.viewport.from && from <= view.viewport.to) {
+            const matchLine = view.state.doc.lineAt(from);
+            if (matchLine.number !== cursorLine) {
+              // Make it a clickable link
+              items.push({
+                from,
+                to,
+                type: 'mark',
+                class: 'cm-md-autolink',
+              });
+            }
           }
         }
 

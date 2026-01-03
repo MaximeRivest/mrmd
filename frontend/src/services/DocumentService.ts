@@ -270,6 +270,23 @@ export class DocumentService implements IDocumentService {
         }
     }
 
+    async copyFile(srcPath: string, destPath: string): Promise<void> {
+        try {
+            await this._postJson<{ status: string }>('/api/file/copy', {
+                src_path: srcPath,
+                dest_path: destPath
+            });
+        } catch (err) {
+            console.error('[DocumentService] Error copying file:', err);
+            throw err;
+        }
+    }
+
+    async moveFile(srcPath: string, destPath: string): Promise<void> {
+        // Move is just rename with a different path
+        await this.renameFile(srcPath, destPath);
+    }
+
     markModified(path: string, modified: boolean): void {
         const file = this._files.get(path);
         if (file && file.modified !== modified) {

@@ -398,13 +398,20 @@ export async function showVenvPicker(options = {}) {
 
     const project = SessionState.getCurrentProject();
 
-    // Determine user's home directory - try to extract from projectRoot or default
-    // Support both Linux (/home/user) and macOS (/Users/user)
-    let userHome = '/';
-    if (projectRoot && (projectRoot.startsWith('/home/') || projectRoot.startsWith('/Users/'))) {
-        const parts = projectRoot.split('/');
-        if (parts.length >= 3) {
-            userHome = '/' + parts[1] + '/' + parts[2];  // /home/username or /Users/username
+    // Get user's home directory from server (canonical source)
+    let userHome = SessionState.getHomeDirectory();
+    if (!userHome) {
+        // Fallback: try to extract from projectRoot
+        // Support both Linux (/home/user) and macOS (/Users/user)
+        if (projectRoot && (projectRoot.startsWith('/home/') || projectRoot.startsWith('/Users/'))) {
+            const parts = projectRoot.split('/');
+            if (parts.length >= 3) {
+                userHome = '/' + parts[1] + '/' + parts[2];
+            }
+        }
+        // Last resort fallback
+        if (!userHome) {
+            userHome = '/';
         }
     }
 

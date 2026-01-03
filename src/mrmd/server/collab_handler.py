@@ -369,8 +369,10 @@ async def _on_file_change(path: str, event_type: str, mtime: Optional[float], se
     manager = get_collab_manager()
     yjs = get_yjs_manager()
 
-    if event_type == 'modified' and yjs and yjs.has_document(path):
-        # File was modified externally - update Yjs document
+    # Handle both 'modified' and 'created' events for Yjs documents
+    # Claude Code and other tools may replace files (delete + create) instead of modifying
+    if event_type in ('modified', 'created') and yjs and yjs.has_document(path):
+        # File was modified/replaced externally - update Yjs document
         try:
             # Use captured content if available (prevents race with autosave)
             if captured_content is not None:
@@ -386,8 +388,11 @@ async def _on_file_change(path: str, event_type: str, mtime: Optional[float], se
 
             if new_content is not None:
                 # Update Yjs document - this will broadcast to all clients
-                await yjs.set_content(path, new_content, 'file_watcher')
-                print(f'[Collab] External file change applied to Yjs: {path}')
+                update = await yjs.set_content(path, new_content, 'file_watcher')
+                if update:
+                    print(f'[Collab] External file change applied to Yjs: {path} ({len(update)} bytes update)')
+                else:
+                    print(f'[Collab] External file change skipped (content unchanged): {path}')
                 return  # Yjs handles the broadcast
         except Exception as e:
             print(f'[Collab] Failed to apply external file change to Yjs: {e}')

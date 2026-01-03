@@ -71,6 +71,8 @@ const bootConfig = {
         '/core/variables-panel.js',
         '/core/developer-status.js',
         '/core/keybindings.js',
+        '/core/quick-picker.js',
+        '/core/project-status.js',
     ],
     banner: {
         js: '/* Atelier boot - clean service architecture */\n'

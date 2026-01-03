@@ -10,7 +10,6 @@
  */
 
 import * as SessionState from './session-state.js';
-import * as ProjectExplorer from './project-explorer.js';
 
 let containerEl = null;
 let isVisible = false;
@@ -60,26 +59,6 @@ export function createHomeScreen(options = {}) {
             </footer>
         </div>
     `;
-
-    // Create project explorer (mounted to body, not containerEl)
-    const explorerEl = ProjectExplorer.createProjectExplorer({
-        onSelect: async (path, opts) => {
-            hide();
-            const { projectPath, createIfNotExists, ...restOpts } = opts;
-
-            if (createIfNotExists) {
-                // Create new file at the specified path
-                await createNewFile(path, projectPath);
-            } else {
-                // Use openNotebook to handle project switching if needed
-                await openNotebook(path, projectPath);
-            }
-        },
-        onClose: () => {
-            // Focus back on home screen if still visible
-        },
-    });
-    document.body.appendChild(explorerEl);
 
     // Wire up event listeners
     setupEventListeners();
@@ -147,6 +126,14 @@ function isNewUser() {
 }
 
 /**
+ * Get the modifier key display text based on platform
+ */
+function getModKey() {
+    const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+    return isMac ? '⌘' : 'Ctrl+';
+}
+
+/**
  * Render welcome message for new users
  */
 function renderWelcome() {
@@ -160,12 +147,15 @@ function renderWelcome() {
         return;
     }
 
+    const modKey = getModKey();
+
     container.style.display = 'flex';
     container.innerHTML = `
         <div class="home-welcome-text">
             <p>Welcome.</p>
             <p>This is your space. Start writing.</p>
             <p class="home-welcome-cursor">_</p>
+            <p class="home-welcome-hint">${modKey}P to open</p>
         </div>
     `;
 
@@ -275,6 +265,21 @@ function formatQuietTime(timestamp) {
 }
 
 /**
+ * Get directory path for display (shortened)
+ */
+function getDisplayPath(fullPath) {
+    if (!fullPath) return '';
+    // Remove filename, get directory
+    const dir = fullPath.substring(0, fullPath.lastIndexOf('/'));
+    // Shorten home path
+    const homeMatch = dir.match(/^\/home\/[^/]+/);
+    if (homeMatch) {
+        return '~' + dir.slice(homeMatch[0].length);
+    }
+    return dir;
+}
+
+/**
  * Render recent notebooks list (front and center per vision doc)
  */
 function renderNotebooks() {
@@ -288,13 +293,12 @@ function renderNotebooks() {
         return;
     }
 
-    // Notebooks front and center - show filename, project, and when
+    // Notebooks front and center - show filename, directory path, and when
     container.innerHTML = `
         <div class="home-notebooks-list">
             ${notebooks.slice(0, 8).map((notebook, index) => {
-                // Get first line/title from overview
-                const title = notebook.overview || notebook.name;
-                const project = notebook.projectName || '';
+                // Show directory path in the middle column
+                const dirPath = getDisplayPath(notebook.path);
                 const when = formatQuietTime(notebook.timestamp);
 
                 return `
@@ -303,11 +307,8 @@ function renderNotebooks() {
                             data-project-path="${escapeHtml(notebook.projectPath || '')}"
                             data-index="${index}">
                         <span class="home-notebook-name">${escapeHtml(notebook.name)}</span>
-                        <span class="home-notebook-title">${escapeHtml(title)}</span>
-                        <span class="home-notebook-meta">
-                            ${project ? `<span class="home-notebook-project">${escapeHtml(project)}</span>` : ''}
-                            ${when ? `<span class="home-notebook-when">${escapeHtml(when)}</span>` : ''}
-                        </span>
+                        <span class="home-notebook-path">${escapeHtml(dirPath)}</span>
+                        <span class="home-notebook-when">${escapeHtml(when)}</span>
                     </button>
                 `;
             }).join('')}
@@ -492,19 +493,19 @@ function handleProjectLabelClick() {
 }
 
 /**
- * Show project explorer with project's files
+ * Show project's files using the quick picker in browse mode
  * Per vision doc: "Click project name in footer: [shows project's notebooks]"
- * Enhanced with fuzzy search, preview, and content search
  */
 function showProjectView(projectPath, projectName) {
-    ProjectExplorer.open(projectPath, projectName);
-}
-
-/**
- * Close project view overlay
- */
-function closeProjectView() {
-    ProjectExplorer.close();
+    // Open picker in browse mode, starting at the project's directory
+    if (onOpenPicker) {
+        onOpenPicker({
+            mode: 'browse',
+            context: 'project',
+            startPath: projectPath,
+            projectName: projectName,
+        });
+    }
 }
 
 /**
@@ -573,16 +574,11 @@ function handleNewNotebook(initialContent = '') {
  * Handle global keyboard shortcuts
  *
  * Behavior differs by state:
- * - New users (no notebooks): any key creates a notebook
- * - Returning users: typing opens picker, N/Enter creates notebook
+ * - New users (no notebooks): any key creates a notebook (except "/" which opens picker)
+ * - Returning users: N/Enter creates notebook, "/" opens picker in browse mode
  */
 function handleGlobalKeydown(e) {
     if (!isVisible) return;
-
-    // Project explorer handles its own keyboard events
-    if (ProjectExplorer.isShown()) {
-        return;
-    }
 
     // Ctrl+P / Cmd+P is handled by compact-mode.js globally
     // Don't handle it here to avoid conflicts
@@ -590,6 +586,15 @@ function handleGlobalKeydown(e) {
     // Ignore other modifier combos, navigation, function keys
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key.length > 1 && !['Enter', 'Backspace'].includes(e.key)) return;
+
+    // "/" opens picker in browse mode (both new and returning users)
+    if (e.key === '/') {
+        e.preventDefault();
+        if (onOpenPicker) {
+            onOpenPicker({ mode: 'browse', context: 'home' });
+        }
+        return;
+    }
 
     if (isNewUser()) {
         // New user: any printable character or Enter creates notebook
@@ -599,18 +604,12 @@ function handleGlobalKeydown(e) {
             handleNewNotebook(initialChar);
         }
     } else {
-        // Returning user: N or Enter creates notebook, P opens project explorer
+        // Returning user: N or Enter creates notebook
         if (e.key === 'n' || e.key === 'N' || e.key === 'Enter') {
             e.preventDefault();
             handleNewNotebook('');
-        } else if (e.key === 'p' || e.key === 'P') {
-            // P opens project explorer (the clean notebook browser)
-            e.preventDefault();
-            const currentProject = SessionState.getCurrentProject();
-            if (currentProject) {
-                showProjectView(currentProject.path, currentProject.name);
-            }
         }
+        // P is now handled by nav:picker keybinding in compact-mode.js
         // Other keys do nothing - no accidental actions
     }
 }
@@ -886,9 +885,6 @@ export function destroy() {
     SessionState.off('recent-projects', renderProjects);
     SessionState.off('recent-notebooks', renderNotebooks);
     SessionState.off('project-opened', handleProjectOpened);
-
-    // Clean up project explorer
-    ProjectExplorer.destroy();
 
     if (containerEl && containerEl.parentNode) {
         containerEl.parentNode.removeChild(containerEl);

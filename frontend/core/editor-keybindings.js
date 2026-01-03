@@ -5,12 +5,18 @@
  * work across all modes (Study, Codes, Compact). It's part of the shared
  * service layer.
  *
+ * Features:
+ * - Cross-project detection: prompts before running code in a different project
+ * - Status updates during execution
+ *
  * Usage:
  *   import { initEditorKeybindings } from '/core/editor-keybindings.js';
  *   initEditorKeybindings({ getEditor: () => editor, statusEl });
  */
 
 import { KeybindingManager } from './keybinding-manager.js';
+import * as SessionState from './session-state.js';
+import * as ProjectStatus from './project-status.js';
 
 // Dynamic getter for current editor - ensures we always get the live reference
 let getEditorFn = null;
@@ -95,12 +101,63 @@ function setStatus(text) {
 }
 
 /**
+ * Check if we can run code, handling cross-project scenarios
+ * Returns true if we should proceed with execution
+ */
+async function checkCrossProjectExecution() {
+    const currentFile = SessionState.getActiveFilePath();
+    if (!currentFile) return true; // No file, proceed
+
+    const { matches, fileProject, activeProject } = ProjectStatus.checkProjectMatch(currentFile);
+
+    if (matches) {
+        return true; // Same project, proceed
+    }
+
+    // File belongs to a different project - prompt user
+    if (fileProject) {
+        const shouldSwitch = await ProjectStatus.showSwitchProjectPrompt(fileProject, activeProject);
+
+        if (shouldSwitch) {
+            // Switch to the file's project
+            setStatus('switching project...');
+            try {
+                // Use openProject with skipWarning=true since user already confirmed
+                const result = await SessionState.openProject(fileProject.projectPath, true, { skipFileOpen: true });
+                if (result.success) {
+                    setStatus('ready');
+                    return true; // Now can proceed
+                } else {
+                    console.error('[EditorKeybindings] Project switch failed:', result.message);
+                    setStatus('switch failed');
+                    return false;
+                }
+            } catch (err) {
+                console.error('[EditorKeybindings] Failed to switch project:', err);
+                setStatus('switch failed');
+                return false;
+            }
+        } else {
+            // User cancelled
+            return false;
+        }
+    }
+
+    return true; // No file project tracked, proceed
+}
+
+/**
  * Handle Ctrl+Enter - Run current code block
  * Uses the same code path as clicking the run button directly.
+ * Checks for cross-project execution first.
  */
 async function handleRunCell() {
     const editor = getEditor();
     if (!editor) return;
+
+    // Check cross-project before running
+    const canRun = await checkCrossProjectExecution();
+    if (!canRun) return;
 
     if (editor.runCodeBlockAtCursor()) {
         setStatus('running...');
@@ -115,10 +172,15 @@ async function handleRunCell() {
  *
  * Uses AST-based block detection (not DOM) to reliably find blocks
  * regardless of scroll position or viewport.
+ * Checks for cross-project execution first.
  */
 async function handleRunCellAdvance() {
     const editor = getEditor();
     if (!editor) return;
+
+    // Check cross-project before running
+    const canRun = await checkCrossProjectExecution();
+    if (!canRun) return;
 
     const cursor = editor.getCursor();
     const blocks = editor.getCodeBlocks();
@@ -191,10 +253,15 @@ async function handleRunCellAdvance() {
 /**
  * Handle Ctrl+Shift+Enter - Run all code blocks
  * Uses the same code path as clicking run buttons directly.
+ * Checks for cross-project execution first.
  */
 async function handleRunAll() {
     const editor = getEditor();
     if (!editor) return;
+
+    // Check cross-project before running
+    const canRun = await checkCrossProjectExecution();
+    if (!canRun) return;
 
     setStatus('running all...');
     try {
