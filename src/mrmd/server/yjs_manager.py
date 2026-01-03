@@ -341,6 +341,13 @@ class YjsDocumentManager:
             print(f'[YjsManager] Content unchanged for {file_path}, skipping update (both {len(content)} chars)')
             return None
 
+        # CRITICAL SAFETY: Don't replace non-empty doc with empty content
+        # This prevents corruption from file watcher race conditions where
+        # the file is read during truncation (before write completes)
+        if len(content) == 0 and len(current_content) > 0:
+            print(f'[YjsManager] BLOCKED: Refusing to apply empty content to non-empty doc: {file_path} (has {len(current_content)} chars)')
+            return None
+
         print(f'[YjsManager] Content CHANGED for {file_path}: {len(current_content)} -> {len(content)} chars')
 
         # Get state before change
@@ -388,6 +395,19 @@ class YjsDocumentManager:
             return
 
         try:
+            # SAFETY: Don't persist empty Yjs state if disk file has content
+            # This prevents corrupted state from being saved
+            content = yjs_doc.content
+            if len(content) == 0:
+                try:
+                    if os.path.exists(yjs_doc.file_path):
+                        disk_size = os.path.getsize(yjs_doc.file_path)
+                        if disk_size > 0:
+                            print(f'[YjsManager] BLOCKED: Not persisting empty Yjs state for non-empty file: {yjs_doc.file_path}')
+                            return
+                except Exception:
+                    pass  # If we can't check, skip the safety check
+
             # Create a safe filename from the path
             safe_name = yjs_doc.file_path.replace('/', '__').replace('\\', '__')
             storage_path = self._storage_dir / f'{safe_name}.yjs'

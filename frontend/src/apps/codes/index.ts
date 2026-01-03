@@ -3028,8 +3028,10 @@ async function detectProjectForPath(dirPath: string): Promise<{ path: string; na
         });
         if (response.ok) {
             const data = await response.json();
-            if (data.is_project) {
-                return { path: data.project_path, name: data.project_name };
+            // API returns project_root (not project_path/is_project)
+            if (data.project_root) {
+                const projectName = data.project_root.split('/').pop() || 'Unknown';
+                return { path: data.project_root, name: projectName };
             }
         }
     } catch (err) {

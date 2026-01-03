@@ -2271,8 +2271,9 @@ async function detectProjectForPath(dirPath) {
     });
     if (response.ok) {
       const data = await response.json();
-      if (data.is_project) {
-        return { path: data.project_path, name: data.project_name };
+      if (data.project_root) {
+        const projectName = data.project_root.split("/").pop() || "Unknown";
+        return { path: data.project_root, name: projectName };
       }
     }
   } catch (err) {

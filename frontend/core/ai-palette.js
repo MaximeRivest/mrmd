@@ -1432,19 +1432,16 @@ export function createAiPalette(options = {}) {
             }, 10);
         };
 
-        // Handle mouseup - show menu if there's a selection
+        // Handle mouseup - update cursor position
         const handleMouseUp = (e) => {
             handleCursorChange();
-            handleSelectionComplete(e);
         };
 
-        // Handle keyup - show menu if shift released and there's a selection
+        // Handle keyup - update cursor position
         const handleKeyUp = (e) => {
             handleCursorChange();
-            // Check if shift was released after making a selection
-            if (e.key === 'Shift' && shiftHeld) {
+            if (e.key === 'Shift') {
                 shiftHeld = false;
-                handleSelectionComplete(e);
             }
         };
 
