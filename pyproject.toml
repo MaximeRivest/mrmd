@@ -1,0 +1,78 @@
+[project]
+name = "mrmd"
+version = "0.2.0"
+description = "Collaborative markdown notebooks - edit and run code together"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Maxime" }
+]
+keywords = [
+    "markdown",
+    "notebook",
+    "collaborative",
+    "editor",
+    "yjs",
+    "crdt",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Editors",
+    "Topic :: Software Development",
+]
+
+dependencies = [
+    # Node.js runtime (bundled as Python wheel!)
+    "nodejs-bin>=18.0.0",
+
+    # Web server
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "httpx>=0.25.0",
+
+    # Python runtime (code execution) - from PyPI
+    "mrmd-python>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[project.scripts]
+mrmd = "mrmd.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/anthropics/mrmd-packages"
+Repository = "https://github.com/anthropics/mrmd-packages"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mrmd"]
+
+# Note: For release builds, run scripts/bundle.sh first to populate bundled/
+# then uncomment these lines:
+# [tool.hatch.build.targets.wheel.force-include]
+# "bundled/editor" = "mrmd/bundled/editor"
+# "bundled/sync" = "mrmd/bundled/sync"
+# "bundled/monitor" = "mrmd/bundled/monitor"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/mrmd",
+    "README.md",
+]

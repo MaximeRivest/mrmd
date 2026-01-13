@@ -1,0 +1,2 @@
+# Bundled assets go here when building for release.
+# In development mode, mrmd uses sibling packages directly.
