@@ -14,7 +14,7 @@ Python API:
     from mrmd import find_project_root, get_project_info, resolve_target
 """
 
-__version__ = "0.9.17"
+__version__ = "0.9.18"
 
 from .orchestrator import Orchestrator
 from .config import OrchestratorConfig

@@ -161,6 +161,76 @@ def create_app(orchestrator: Orchestrator) -> FastAPI:
             result['initial_doc'] = orchestrator._initial_doc
         return result
 
+    @app.get("/api/project")
+    async def project():
+        """Get project information."""
+        return orchestrator.get_project_info()
+
+    @app.get("/api/runtimes")
+    async def list_runtimes():
+        """
+        List all running runtimes (shared and dedicated).
+
+        Returns comprehensive runtime info including:
+        - Shared Python runtime (daemon)
+        - Dedicated runtimes per document
+        - Venv and port info for each
+        """
+        from . import python_runtime
+
+        result = {
+            "shared": None,
+            "dedicated": [],
+            "project": orchestrator.get_project_info(),
+        }
+
+        # Get all registered runtimes from daemon registry
+        all_runtimes = python_runtime.list_runtimes()
+
+        for rt in all_runtimes:
+            runtime_info = {
+                "id": rt.get("id"),
+                "url": rt.get("url"),
+                "port": rt.get("port"),
+                "pid": rt.get("pid"),
+                "alive": rt.get("alive", False),
+                "venv": rt.get("venv"),
+                "cwd": rt.get("cwd"),
+            }
+
+            if rt.get("id") == "shared":
+                result["shared"] = runtime_info
+            else:
+                runtime_info["doc"] = rt.get("id")  # For dedicated, id is the doc name
+                result["dedicated"].append(runtime_info)
+
+        # Also include sessions info
+        sessions = orchestrator.get_sessions()
+        result["sessions"] = [
+            orchestrator.get_session_info(doc) for doc in sessions.keys()
+        ]
+
+        return result
+
+    @app.delete("/api/runtimes/{runtime_id}")
+    async def kill_runtime(runtime_id: str):
+        """
+        Kill a runtime by ID.
+
+        For dedicated runtimes, this destroys the session.
+        For shared runtime, this kills the daemon (will restart on next execution).
+        """
+        from . import python_runtime
+
+        if runtime_id == "shared":
+            # Kill the shared runtime daemon
+            success = python_runtime.stop_runtime("shared")
+            return {"id": runtime_id, "killed": success, "message": "Shared runtime killed. Will restart on next execution."}
+        else:
+            # For dedicated runtimes, destroy the session
+            success = await orchestrator.destroy_session(runtime_id)
+            return {"id": runtime_id, "killed": success, "message": f"Dedicated runtime for '{runtime_id}' destroyed."}
+
     # --- Monitor Management ---
 
     @app.get("/api/monitors")
