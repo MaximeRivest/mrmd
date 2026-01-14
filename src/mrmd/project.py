@@ -51,34 +51,6 @@ def find_project_root(start_path: Optional[Path] = None) -> Path:
     return Path.cwd()
 
 
-def find_docs_dir(project_root: Path) -> Path:
-    """
-    Find or create the docs directory for mrmd documents.
-
-    Looks for existing docs directories in order of preference:
-    1. ./docs (standard)
-    2. ./notebooks
-    3. ./notes
-
-    If none exist, returns ./docs (will be created on first save).
-
-    Args:
-        project_root: The project root directory.
-
-    Returns:
-        Path to the docs directory.
-    """
-    candidates = ["docs", "notebooks", "notes"]
-
-    for name in candidates:
-        docs_dir = project_root / name
-        if docs_dir.is_dir():
-            return docs_dir
-
-    # Default to docs
-    return project_root / "docs"
-
-
 def find_venv(project_root: Path) -> Optional[Path]:
     """
     Find a Python virtual environment in the project.
@@ -113,7 +85,6 @@ def get_project_info(start_path: Optional[Path] = None) -> dict:
         Dictionary with project information.
     """
     project_root = find_project_root(start_path)
-    docs_dir = find_docs_dir(project_root)
     venv = find_venv(project_root)
 
     # Detect project type
@@ -134,7 +105,7 @@ def get_project_info(start_path: Optional[Path] = None) -> dict:
         "root": project_root,
         "name": project_name,
         "type": project_type,
-        "docs_dir": docs_dir,
+        "project_root": project_root,
         "venv": venv,
         "has_git": (project_root / ".git").exists(),
     }

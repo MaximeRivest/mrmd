@@ -1,9 +1,9 @@
 [project]
 name = "mrmd"
-version = "0.2.0"
+version = "0.9.11"
 description = "Collaborative markdown notebooks - edit and run code together"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 authors = [
     { name = "Maxime" }
@@ -23,7 +23,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -40,14 +39,24 @@ dependencies = [
     "uvicorn[standard]>=0.24.0",
     "httpx>=0.25.0",
 
-    # Python runtime (code execution) - from PyPI
-    "mrmd-python>=0.1.0",
+    # Python runtime (code execution) - daemon-based, survives orchestrator restart
+    "mrmd-python>=0.2.0",
+
+    # AI features (completions, fixes, corrections)
+    "mrmd-ai>=0.1.0",
 ]
 
 [project.optional-dependencies]
+ai = [
+    # AI features (completions, fixes, corrections)
+    "mrmd-ai>=0.1.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
+]
+all = [
+    "mrmd-ai>=0.1.0",
 ]
 
 [project.scripts]

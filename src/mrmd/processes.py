@@ -1,420 +1,239 @@
 """
 Process management for mrmd services.
 
-Manages Node.js subprocesses (mrmd-sync, mrmd-monitor) and Python runtime.
+Handles starting, stopping, and monitoring subprocess lifecycle.
 """
 
 import asyncio
-import logging
-import os
+import subprocess
 import signal
 import sys
-from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Callable
-import subprocess
+import logging
 
 logger = logging.getLogger(__name__)
 
 
-def get_node_executable() -> str:
-    """
-    Get the Node.js executable path.
+@dataclass
+class ProcessInfo:
+    """Information about a managed process."""
 
-    First tries nodejs-bin (bundled), then falls back to system node.
+    name: str
+    process: Optional[asyncio.subprocess.Process] = None
+    pid: Optional[int] = None
+    command: list[str] = field(default_factory=list)
+    cwd: Optional[str] = None
+    status: str = "stopped"  # stopped, starting, running, stopping, failed
+    output_lines: list[str] = field(default_factory=list)
+    max_output_lines: int = 100
 
-    Returns:
-        Path to node executable.
-
-    Raises:
-        RuntimeError: If Node.js is not available.
-    """
-    # Try nodejs-bin first (installed as dependency)
-    try:
-        from nodejs import node
-        # nodejs-bin provides the path via node.path or we can use node.run
-        return "node"  # nodejs-bin patches PATH
-    except ImportError:
-        pass
-
-    # Fall back to system node
-    try:
-        result = subprocess.run(
-            ["node", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            return "node"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-
-    raise RuntimeError(
-        "Node.js not found. Install nodejs-bin: pip install nodejs-bin\n"
-        "Or install Node.js from https://nodejs.org"
-    )
-
-
-def find_package_path(package_name: str) -> Optional[Path]:
-    """
-    Find the path to a bundled or sibling package.
-
-    Looks in:
-    1. Bundled directory (for installed package)
-    2. Sibling directory (for development)
-
-    Args:
-        package_name: Name of the package (e.g., 'mrmd-sync')
-
-    Returns:
-        Path to the package directory, or None if not found.
-    """
-    # Check bundled directory
-    bundled_path = Path(__file__).parent / "bundled" / package_name.replace("mrmd-", "")
-    if bundled_path.exists():
-        return bundled_path
-
-    # Check sibling directory (development mode)
-    # Go from src/mrmd/ up to mrmd-packages/
-    dev_root = Path(__file__).parent.parent.parent.parent
-    sibling_path = dev_root / package_name
-    if sibling_path.exists():
-        return sibling_path
-
-    # Check environment variable
-    env_path = os.environ.get("MRMD_PACKAGES_DIR")
-    if env_path:
-        env_package_path = Path(env_path) / package_name
-        if env_package_path.exists():
-            return env_package_path
-
-    return None
+    def add_output(self, line: str):
+        """Add output line, keeping buffer bounded."""
+        self.output_lines.append(line)
+        if len(self.output_lines) > self.max_output_lines:
+            self.output_lines = self.output_lines[-self.max_output_lines:]
 
 
 class ProcessManager:
-    """
-    Manages background processes for mrmd services.
-
-    Handles starting, stopping, and monitoring Node.js and Python subprocesses.
-    """
+    """Manages subprocess lifecycle for mrmd services."""
 
     def __init__(self):
-        self._processes: dict[str, asyncio.subprocess.Process] = {}
-        self._output_buffers: dict[str, deque] = {}
+        self.processes: dict[str, ProcessInfo] = {}
         self._output_tasks: dict[str, asyncio.Task] = {}
-        self._max_output_lines = 1000
+        self._on_output: Optional[Callable[[str, str], None]] = None
 
-    async def start_node_process(
+    def set_output_handler(self, handler: Callable[[str, str], None]):
+        """Set callback for process output: handler(process_name, line)."""
+        self._on_output = handler
+
+    async def start(
         self,
         name: str,
-        script_path: Path,
-        args: list[str] = None,
-        cwd: Path = None,
-        env: dict = None,
-        on_output: Callable[[str], None] = None,
-    ) -> bool:
+        command: list[str],
+        cwd: Optional[str] = None,
+        env: Optional[dict] = None,
+        wait_for: Optional[str] = None,
+        timeout: float = 30.0,
+    ) -> ProcessInfo:
         """
-        Start a Node.js subprocess.
+        Start a process.
 
         Args:
-            name: Unique name for this process.
-            script_path: Path to the JS script to run.
-            args: Command line arguments.
-            cwd: Working directory.
-            env: Environment variables (merged with current env).
-            on_output: Callback for output lines.
+            name: Unique name for this process
+            command: Command and arguments
+            cwd: Working directory
+            env: Additional environment variables
+            wait_for: String to wait for in output before returning
+            timeout: Timeout for wait_for
 
         Returns:
-            True if started successfully.
+            ProcessInfo with status
         """
-        if name in self._processes:
+        if name in self.processes and self.processes[name].status == "running":
             logger.warning(f"Process {name} already running")
-            return False
+            return self.processes[name]
 
-        try:
-            node = get_node_executable()
-        except RuntimeError as e:
-            logger.error(str(e))
-            return False
+        info = ProcessInfo(name=name, command=command, cwd=cwd, status="starting")
+        self.processes[name] = info
 
-        cmd = [node, str(script_path)] + (args or [])
-
-        # Merge environment
-        process_env = os.environ.copy()
+        # Prepare environment
+        process_env = dict(subprocess.os.environ)
         if env:
             process_env.update(env)
 
-        logger.info(f"Starting {name}: {' '.join(cmd)}")
+        # Force unbuffered output for Python
+        process_env["PYTHONUNBUFFERED"] = "1"
 
         try:
+            logger.info(f"Starting {name}: {' '.join(command)}")
+
             process = await asyncio.create_subprocess_exec(
-                *cmd,
+                *command,
                 cwd=cwd,
                 env=process_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
 
-            self._processes[name] = process
-            self._output_buffers[name] = deque(maxlen=self._max_output_lines)
+            info.process = process
+            info.pid = process.pid
 
-            # Start output reader task
+            # Start output reader
+            ready_event = asyncio.Event() if wait_for else None
             self._output_tasks[name] = asyncio.create_task(
-                self._read_output(name, process, on_output)
+                self._read_output(name, process, wait_for, ready_event)
             )
 
-            logger.info(f"Started {name} with PID {process.pid}")
-            return True
+            # Wait for ready string or just a moment
+            if wait_for and ready_event:
+                try:
+                    await asyncio.wait_for(ready_event.wait(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    logger.warning(f"{name} did not show '{wait_for}' within {timeout}s")
 
-        except Exception as e:
-            logger.error(f"Failed to start {name}: {e}")
-            return False
-
-    async def start_python_process(
-        self,
-        name: str,
-        module: str,
-        args: list[str] = None,
-        cwd: Path = None,
-        env: dict = None,
-        venv: Path = None,
-        on_output: Callable[[str], None] = None,
-    ) -> bool:
-        """
-        Start a Python subprocess.
-
-        Args:
-            name: Unique name for this process.
-            module: Python module to run (e.g., 'mrmd_python.cli').
-            args: Command line arguments.
-            cwd: Working directory.
-            env: Environment variables.
-            venv: Virtual environment path.
-            on_output: Callback for output lines.
-
-        Returns:
-            True if started successfully.
-        """
-        if name in self._processes:
-            logger.warning(f"Process {name} already running")
-            return False
-
-        # Determine Python executable
-        if venv:
-            if sys.platform == "win32":
-                python = venv / "Scripts" / "python.exe"
+            # Check if still running
+            if process.returncode is not None:
+                info.status = "failed"
+                logger.error(f"{name} exited with code {process.returncode}")
             else:
-                python = venv / "bin" / "python"
-        else:
-            python = sys.executable
-
-        cmd = [str(python), "-m", module] + (args or [])
-
-        # Merge environment
-        process_env = os.environ.copy()
-        if env:
-            process_env.update(env)
-
-        logger.info(f"Starting {name}: {' '.join(cmd)}")
-
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=cwd,
-                env=process_env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-
-            self._processes[name] = process
-            self._output_buffers[name] = deque(maxlen=self._max_output_lines)
-
-            # Start output reader task
-            self._output_tasks[name] = asyncio.create_task(
-                self._read_output(name, process, on_output)
-            )
-
-            logger.info(f"Started {name} with PID {process.pid}")
-            return True
+                info.status = "running"
+                logger.info(f"{name} started (PID {process.pid})")
 
         except Exception as e:
+            info.status = "failed"
             logger.error(f"Failed to start {name}: {e}")
-            return False
 
-    async def start_npx_process(
-        self,
-        name: str,
-        package: str,
-        args: list[str] = None,
-        cwd: Path = None,
-        env: dict = None,
-        on_output: Callable[[str], None] = None,
-    ) -> bool:
-        """
-        Start a Node.js package via npx.
-
-        Args:
-            name: Unique name for this process.
-            package: npm package name to run via npx.
-            args: Command line arguments.
-            cwd: Working directory.
-            env: Environment variables (merged with current env).
-            on_output: Callback for output lines.
-
-        Returns:
-            True if started successfully.
-        """
-        if name in self._processes:
-            logger.warning(f"Process {name} already running")
-            return False
-
-        # Use npx from nodejs-bin
-        try:
-            from nodejs import npx
-            npx_cmd = "npx"
-        except ImportError:
-            npx_cmd = "npx"
-
-        cmd = [npx_cmd, package] + (args or [])
-
-        # Merge environment
-        process_env = os.environ.copy()
-        if env:
-            process_env.update(env)
-
-        logger.info(f"Starting {name}: {' '.join(cmd)}")
-
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=cwd,
-                env=process_env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-
-            self._processes[name] = process
-            self._output_buffers[name] = deque(maxlen=self._max_output_lines)
-
-            # Start output reader task
-            self._output_tasks[name] = asyncio.create_task(
-                self._read_output(name, process, on_output)
-            )
-
-            logger.info(f"Started {name} with PID {process.pid}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to start {name}: {e}")
-            return False
+        return info
 
     async def _read_output(
         self,
         name: str,
         process: asyncio.subprocess.Process,
-        callback: Callable[[str], None] = None,
+        wait_for: Optional[str],
+        ready_event: Optional[asyncio.Event],
     ):
-        """Read output from a process and store in buffer."""
+        """Read process output and handle wait_for."""
+        info = self.processes.get(name)
+        if not info or not process.stdout:
+            return
+
         try:
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break
+            async for line_bytes in process.stdout:
+                line = line_bytes.decode("utf-8", errors="replace").rstrip()
+                info.add_output(line)
 
-                line_str = line.decode("utf-8", errors="replace").rstrip()
-                self._output_buffers[name].append(line_str)
+                if self._on_output:
+                    self._on_output(name, line)
+                else:
+                    # Default: print with prefix
+                    print(f"[{name}] {line}")
 
-                if callback:
-                    callback(line_str)
+                # Check for ready string
+                if wait_for and ready_event and wait_for in line:
+                    ready_event.set()
 
-        except asyncio.CancelledError:
-            pass
         except Exception as e:
-            logger.error(f"Error reading output from {name}: {e}")
+            logger.error(f"Error reading {name} output: {e}")
 
-    def is_running(self, name: str) -> bool:
-        """Check if a process is running."""
-        if name not in self._processes:
-            return False
-        return self._processes[name].returncode is None
-
-    def get_output(self, name: str, lines: int = 50) -> list[str]:
-        """Get recent output lines from a process."""
-        if name not in self._output_buffers:
-            return []
-        buffer = self._output_buffers[name]
-        return list(buffer)[-lines:]
+        # Process ended
+        if info:
+            info.status = "stopped"
+            logger.info(f"{name} exited")
 
     async def stop(self, name: str, timeout: float = 5.0) -> bool:
         """
         Stop a process gracefully.
 
-        Sends SIGTERM, waits for timeout, then SIGKILL if needed.
-
         Args:
-            name: Process name.
-            timeout: Seconds to wait before SIGKILL.
+            name: Process name
+            timeout: Seconds to wait before force kill
 
         Returns:
-            True if stopped successfully.
+            True if stopped successfully
         """
-        if name not in self._processes:
+        info = self.processes.get(name)
+        if not info or not info.process:
             return True
 
-        process = self._processes[name]
-
-        if process.returncode is not None:
-            # Already stopped
-            del self._processes[name]
+        if info.status != "running":
             return True
 
-        logger.info(f"Stopping {name} (PID {process.pid})")
+        info.status = "stopping"
+        process = info.process
 
-        # Send SIGTERM
         try:
+            # Try graceful termination
+            logger.info(f"Stopping {name} (PID {process.pid})")
             process.terminate()
-        except ProcessLookupError:
-            del self._processes[name]
-            return True
 
-        # Wait for graceful shutdown
-        try:
-            await asyncio.wait_for(process.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning(f"{name} didn't stop gracefully, sending SIGKILL")
             try:
+                await asyncio.wait_for(process.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                # Force kill
+                logger.warning(f"{name} did not stop gracefully, killing")
                 process.kill()
                 await process.wait()
-            except ProcessLookupError:
-                pass
 
-        # Cancel output reader
-        if name in self._output_tasks:
-            self._output_tasks[name].cancel()
-            try:
-                await self._output_tasks[name]
-            except asyncio.CancelledError:
-                pass
-            del self._output_tasks[name]
+            info.status = "stopped"
+            info.pid = None
+            logger.info(f"{name} stopped")
+            return True
 
-        del self._processes[name]
-        logger.info(f"Stopped {name}")
-        return True
+        except Exception as e:
+            logger.error(f"Error stopping {name}: {e}")
+            return False
 
     async def stop_all(self, timeout: float = 5.0):
-        """Stop all running processes."""
-        names = list(self._processes.keys())
-        for name in names:
-            await self.stop(name, timeout)
+        """Stop all managed processes."""
+        tasks = [
+            self.stop(name, timeout)
+            for name, info in self.processes.items()
+            if info.status == "running"
+        ]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-    def get_status(self) -> dict:
+    def get_status(self) -> dict[str, dict]:
         """Get status of all processes."""
         return {
             name: {
-                "running": self.is_running(name),
-                "pid": proc.pid if proc.returncode is None else None,
-                "returncode": proc.returncode,
+                "status": info.status,
+                "pid": info.pid,
+                "command": info.command,
             }
-            for name, proc in self._processes.items()
+            for name, info in self.processes.items()
         }
+
+    def get_output(self, name: str, lines: int = 50) -> list[str]:
+        """Get recent output lines from a process."""
+        info = self.processes.get(name)
+        if not info:
+            return []
+        return info.output_lines[-lines:]
+
+    def is_running(self, name: str) -> bool:
+        """Check if a process is running."""
+        info = self.processes.get(name)
+        return info is not None and info.status == "running"

@@ -8,24 +8,25 @@ Usage:
     $ mrmd                  # Run after pip install
 
 Python API:
+    from mrmd import Orchestrator, OrchestratorConfig
     from mrmd import find_project_root, get_project_info
-    from mrmd.processes import ProcessManager
-    from mrmd.server import create_app
 """
 
-__version__ = "0.2.0"
+__version__ = "0.9.7"
 
+from .orchestrator import Orchestrator
+from .config import OrchestratorConfig
 from .project import (
     find_project_root,
-    find_docs_dir,
     find_venv,
     get_project_info,
 )
 
 __all__ = [
     "__version__",
+    "Orchestrator",
+    "OrchestratorConfig",
     "find_project_root",
-    "find_docs_dir",
     "find_venv",
     "get_project_info",
 ]
