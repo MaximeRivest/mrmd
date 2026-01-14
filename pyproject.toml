@@ -1,6 +1,6 @@
 [project]
 name = "mrmd"
-version = "0.9.12"
+version = "0.9.13"
 description = "Collaborative markdown notebooks - edit and run code together"
 readme = "README.md"
 requires-python = ">=3.11"

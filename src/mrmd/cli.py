@@ -24,6 +24,7 @@ from .config import OrchestratorConfig, SyncConfig, RuntimeConfig, MonitorConfig
 from .orchestrator import Orchestrator
 from .project import find_project_root
 from .server import run_server
+from .cleanup import cleanup_all, find_free_port
 
 # Setup logging
 logging.basicConfig(
@@ -181,6 +182,11 @@ Monitors are started on-demand via the API:
         default="info",
         help="Log level (default: info)",
     )
+    parser.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Skip automatic cleanup of stale processes and PID files",
+    )
 
     return parser.parse_args()
 
@@ -285,8 +291,35 @@ def build_config(args) -> OrchestratorConfig:
 async def async_main(args):
     """Async main entry point."""
 
+    # Get project root early for cleanup
+    project_root = find_project_root()
+
+    # Cleanup stale processes and PID files (unless disabled)
+    if not args.no_cleanup:
+        ports_to_check = [args.port, args.sync_port, args.runtime_port, args.ai_port]
+        results = cleanup_all(str(project_root), ports_to_check)
+        if results['sync_cleaned']:
+            logger.info("Cleaned up stale mrmd-sync state")
+        if results['runtimes_cleaned']:
+            logger.info(f"Cleaned up {results['runtimes_cleaned']} stale runtime(s)")
+        if results['ports_cleaned']:
+            logger.info(f"Freed ports: {results['ports_cleaned']}")
+
     # Build config
     config = build_config(args)
+
+    # Auto-find free ports if defaults are in use and still occupied
+    # This handles cases where cleanup couldn't free the port (different process)
+    if args.port == 41580 and find_free_port(args.port, 1) != args.port:
+        new_port = find_free_port(args.port)
+        logger.info(f"Port {args.port} in use, using {new_port} instead")
+        config.editor.port = new_port
+
+    if args.sync_port == 41444 and find_free_port(args.sync_port, 1) != args.sync_port:
+        new_port = find_free_port(args.sync_port)
+        logger.info(f"Port {args.sync_port} in use, using {new_port} instead")
+        config.sync.port = new_port
+        config.sync.url = f"ws://localhost:{new_port}"
 
     # Set log level
     logging.getLogger().setLevel(getattr(logging, config.log_level.upper()))
