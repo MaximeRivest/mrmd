@@ -407,13 +407,20 @@ class Orchestrator:
             effective_venv = self._project_venv
             logger.info(f"Using detected project venv for dedicated session: {effective_venv}")
 
+        logger.info(f"create_session called: doc={doc_name}, python={python}, venv={venv}, effective_venv={effective_venv}")
+
         # Check if session already exists
         if doc_name in self._sessions:
             session = self._sessions[doc_name]
+            logger.info(f"Session exists: dedicated={session.dedicated_runtime}, venv={session.venv}")
             # If requesting dedicated but have shared (or vice versa), or different venv, recreate
-            if (python == "dedicated") != session.dedicated_runtime or session.venv != effective_venv:
+            needs_recreate = (python == "dedicated") != session.dedicated_runtime or session.venv != effective_venv
+            logger.info(f"Needs recreate: {needs_recreate} (mode_mismatch={(python == 'dedicated') != session.dedicated_runtime}, venv_mismatch={session.venv != effective_venv})")
+            if needs_recreate:
+                logger.info(f"Destroying old session for {doc_name} to recreate with new venv")
                 await self.destroy_session(doc_name)
             else:
+                logger.info(f"Returning existing session for {doc_name}")
                 return session
 
         session = SessionInfo(doc=doc_name, venv=effective_venv)
