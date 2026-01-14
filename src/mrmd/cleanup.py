@@ -1,36 +1,48 @@
 """
 Cleanup utilities for mrmd.
 
-Handles:
+Handles project-scoped cleanup:
 - Finding free ports
-- Killing stale mrmd processes
+- Killing stale mrmd processes FOR THIS PROJECT ONLY
 - Cleaning up orphaned PID files
 - Cleaning up orphaned runtime registries
+
+IMPORTANT: This module implements project-level isolation. It will NEVER kill
+processes belonging to other projects. Each project's state is stored in
+~/.mrmd/projects/{project_hash}/
 """
 
 import os
 import socket
 import signal
 import json
-import hashlib
+import time
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
+
+from .project import get_project_hash, get_project_state_dir
 
 logger = logging.getLogger(__name__)
 
 
-def find_free_port(start: int = 41580, max_attempts: int = 100) -> int:
+def find_free_port(start: int = 0, max_attempts: int = 100) -> int:
     """
-    Find a free port starting from the given port.
+    Find a free port.
 
     Args:
-        start: Port to start searching from
+        start: Port to start searching from (0 = let OS assign)
         max_attempts: Maximum number of ports to try
 
     Returns:
         A free port number
     """
+    if start == 0:
+        # Let OS assign a free port
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            return s.getsockname()[1]
+
     for offset in range(max_attempts):
         port = start + offset
         try:
@@ -44,6 +56,16 @@ def find_free_port(start: int = 41580, max_attempts: int = 100) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(('', 0))
         return s.getsockname()[1]
+
+
+def is_port_free(port: int) -> bool:
+    """Check if a port is available."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', port))
+            return True
+    except OSError:
+        return False
 
 
 def get_port_pid(port: int) -> Optional[int]:
@@ -82,17 +104,62 @@ def kill_process(pid: int, force: bool = False) -> bool:
         return False
 
 
-def get_sync_state_dir(project_root: str) -> Path:
+def get_sync_state_dir(project_root: Path) -> Path:
     """Get the mrmd-sync state directory for a project."""
-    resolved = Path(project_root).resolve()
-    hash_input = str(resolved).encode('utf-8')
-    dir_hash = hashlib.sha256(hash_input).hexdigest()[:12]
-    return Path(f'/tmp/mrmd-sync-{dir_hash}')
+    project_hash = get_project_hash(project_root)
+    return Path(f'/tmp/mrmd-sync-{project_hash}')
 
 
-def cleanup_stale_sync(project_root: str) -> bool:
+def load_project_state(project_root: Path) -> Optional[dict]:
     """
-    Clean up stale mrmd-sync state for a project.
+    Load the state for a project.
+
+    Args:
+        project_root: The project root directory.
+
+    Returns:
+        State dict or None if no state file exists.
+    """
+    state_dir = get_project_state_dir(project_root)
+    state_file = state_dir / "state.json"
+
+    if not state_file.exists():
+        return None
+
+    try:
+        with open(state_file) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        logger.warning(f"Failed to load project state: {e}")
+        return None
+
+
+def save_project_state(project_root: Path, state: dict) -> bool:
+    """
+    Save state for a project.
+
+    Args:
+        project_root: The project root directory.
+        state: State dict to save.
+
+    Returns:
+        True if save succeeded.
+    """
+    state_dir = get_project_state_dir(project_root)
+    state_file = state_dir / "state.json"
+
+    try:
+        with open(state_file, 'w') as f:
+            json.dump(state, f, indent=2)
+        return True
+    except IOError as e:
+        logger.warning(f"Failed to save project state: {e}")
+        return False
+
+
+def cleanup_stale_sync(project_root: Path) -> bool:
+    """
+    Clean up stale mrmd-sync state for THIS project only.
 
     Returns True if cleanup was needed and successful.
     """
@@ -118,10 +185,8 @@ def cleanup_stale_sync(project_root: str) -> bool:
                 )
                 comm = result.stdout.strip()
                 if 'node' in comm or 'mrmd-sync' in comm:
-                    logger.info(f"Killing stale mrmd-sync (PID {pid})")
+                    logger.info(f"Killing stale mrmd-sync for this project (PID {pid})")
                     kill_process(pid)
-                    # Give it a moment
-                    import time
                     time.sleep(0.5)
                     if is_process_alive(pid):
                         kill_process(pid, force=True)
@@ -138,13 +203,15 @@ def cleanup_stale_sync(project_root: str) -> bool:
         return False
 
 
-def cleanup_stale_runtimes() -> int:
+def cleanup_project_runtimes(project_root: Path) -> int:
     """
-    Clean up stale Python runtime registries.
+    Clean up stale Python runtimes for THIS project only.
 
     Returns number of stale runtimes cleaned up.
     """
-    runtimes_dir = Path.home() / '.mrmd' / 'runtimes'
+    state_dir = get_project_state_dir(project_root)
+    runtimes_dir = state_dir / "runtimes"
+
     if not runtimes_dir.exists():
         return 0
 
@@ -166,78 +233,140 @@ def cleanup_stale_runtimes() -> int:
     return cleaned
 
 
-def cleanup_port(port: int, process_name: str = "mrmd") -> bool:
+def cleanup_project_processes(project_root: Path) -> List[int]:
     """
-    Clean up a process using a specific port if it matches our process name.
+    Clean up stale processes for THIS project based on saved state.
 
-    Returns True if port was freed.
+    Only kills processes that:
+    1. Are recorded in this project's state file
+    2. Have 'mrmd' in their command line
+
+    Returns list of ports that were freed.
     """
-    pid = get_port_pid(port)
-    if not pid:
-        return True  # Already free
+    state = load_project_state(project_root)
+    if not state:
+        return []
 
-    # Check if it's one of ours
-    try:
-        import subprocess
-        result = subprocess.run(
-            ['ps', '-p', str(pid), '-o', 'args='],
-            capture_output=True,
-            text=True
-        )
-        cmdline = result.stdout.strip()
+    freed_ports = []
+    pids_to_check = state.get('pids', {})  # {service_name: pid}
+    ports = state.get('ports', {})  # {service_name: port}
 
-        # Check if this looks like our process
-        if process_name in cmdline or 'mrmd' in cmdline:
-            logger.info(f"Killing stale {process_name} on port {port} (PID {pid})")
-            kill_process(pid)
+    for service, pid in pids_to_check.items():
+        if not is_process_alive(pid):
+            # Process already dead
+            if service in ports:
+                freed_ports.append(ports[service])
+            continue
 
-            # Wait a moment and verify
-            import time
-            time.sleep(0.5)
-            if is_process_alive(pid):
-                kill_process(pid, force=True)
-                time.sleep(0.2)
+        # Verify this is our process
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['ps', '-p', str(pid), '-o', 'args='],
+                capture_output=True,
+                text=True
+            )
+            cmdline = result.stdout.strip()
 
-            return not is_process_alive(pid)
-        else:
-            logger.warning(f"Port {port} in use by non-mrmd process: {cmdline[:50]}")
-            return False
+            if 'mrmd' in cmdline.lower():
+                logger.info(f"Killing stale {service} for this project (PID {pid})")
+                kill_process(pid)
+                time.sleep(0.3)
+                if is_process_alive(pid):
+                    kill_process(pid, force=True)
+                    time.sleep(0.2)
 
-    except Exception as e:
-        logger.warning(f"Error checking port {port}: {e}")
-        return False
+                if service in ports:
+                    freed_ports.append(ports[service])
+            else:
+                logger.debug(f"PID {pid} for {service} is not an mrmd process, skipping")
+
+        except Exception as e:
+            logger.warning(f"Error checking process {pid}: {e}")
+
+    return freed_ports
 
 
-def cleanup_all(project_root: str, ports: Optional[list[int]] = None) -> dict:
+def cleanup_project(project_root: Path) -> dict:
     """
-    Clean up all stale mrmd state for a project.
+    Clean up all stale mrmd state for THIS project only.
+
+    This is the main cleanup entry point. It will NEVER affect other projects.
 
     Args:
         project_root: Project directory
-        ports: List of ports to check (default: common mrmd ports)
 
     Returns:
         Dict with cleanup results
     """
-    if ports is None:
-        ports = [41580, 41444, 41765, 51790]  # editor, sync, runtime, ai
-
     results = {
         'sync_cleaned': False,
         'runtimes_cleaned': 0,
-        'ports_cleaned': [],
+        'processes_cleaned': [],
+        'project_root': str(project_root),
+        'project_hash': get_project_hash(project_root),
     }
 
-    # Clean stale sync
+    # Clean stale sync for this project
     results['sync_cleaned'] = cleanup_stale_sync(project_root)
 
-    # Clean stale runtimes
-    results['runtimes_cleaned'] = cleanup_stale_runtimes()
+    # Clean stale runtimes for this project
+    results['runtimes_cleaned'] = cleanup_project_runtimes(project_root)
 
-    # Clean stale ports
-    for port in ports:
-        if cleanup_port(port):
-            if get_port_pid(port) is None:
-                results['ports_cleaned'].append(port)
+    # Clean stale processes based on saved state
+    results['processes_cleaned'] = cleanup_project_processes(project_root)
 
     return results
+
+
+def cleanup_all_global_runtimes() -> int:
+    """
+    Clean up stale global runtime registries (legacy location).
+
+    This handles the old ~/.mrmd/runtimes/ location for backwards compatibility.
+
+    Returns number of stale runtimes cleaned up.
+    """
+    runtimes_dir = Path.home() / '.mrmd' / 'runtimes'
+    if not runtimes_dir.exists():
+        return 0
+
+    cleaned = 0
+    for registry_file in runtimes_dir.glob('*.json'):
+        try:
+            with open(registry_file) as f:
+                data = json.load(f)
+
+            pid = data.get('pid')
+            if pid and not is_process_alive(pid):
+                logger.info(f"Removing stale global runtime registry: {registry_file.stem} (PID {pid} dead)")
+                registry_file.unlink()
+                cleaned += 1
+
+        except Exception as e:
+            logger.warning(f"Error checking runtime {registry_file}: {e}")
+
+    return cleaned
+
+
+# Legacy function for backwards compatibility
+def cleanup_all(project_root: str, ports: Optional[List[int]] = None) -> dict:
+    """
+    Legacy cleanup function. Now just calls project-scoped cleanup.
+
+    The 'ports' argument is ignored - we no longer kill by port globally.
+    """
+    project_path = Path(project_root)
+    results = cleanup_project(project_path)
+
+    # Also clean legacy global runtimes
+    global_cleaned = cleanup_all_global_runtimes()
+    if global_cleaned:
+        results['runtimes_cleaned'] += global_cleaned
+
+    # Convert for backwards compatibility
+    return {
+        'sync_cleaned': results['sync_cleaned'],
+        'runtimes_cleaned': results['runtimes_cleaned'],
+        'ports_cleaned': results['processes_cleaned'],
+    }

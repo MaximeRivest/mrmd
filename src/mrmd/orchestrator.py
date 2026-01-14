@@ -3,17 +3,24 @@ Main orchestrator for mrmd services.
 
 Coordinates starting/stopping of sync server, monitors, and runtimes.
 Supports per-document dedicated Python runtimes for true process isolation.
+
+State is saved per-project in ~/.mrmd/projects/{hash}/state.json to enable
+project-level isolation and cleanup.
 """
 
 import asyncio
 import logging
+import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from .config import OrchestratorConfig
 from .processes import ProcessManager
-from .project import find_project_root, find_venv, get_project_info
+from .project import find_project_root, find_venv, get_project_info, get_project_state_dir, get_project_hash
+from .cleanup import save_project_state
+from .venv import get_node_bin, get_node_bin_dir
 from . import python_runtime
 
 logger = logging.getLogger(__name__)
@@ -47,8 +54,13 @@ class Orchestrator:
         self._sessions: dict[str, SessionInfo] = {}  # doc_name -> SessionInfo
         self._started = False
 
+        # Project-level state tracking
+        self._pids: dict[str, int] = {}  # service_name -> pid
+        self._ports: dict[str, int] = {}  # service_name -> port
+
         # Detect project info (venv, cwd, etc.)
         self._project_info = get_project_info(project_dir)
+        self._project_root: Optional[Path] = self._project_info.get("root")
         self._project_venv: Optional[str] = None
         if self._project_info.get("venv"):
             self._project_venv = str(self._project_info["venv"])
@@ -75,7 +87,27 @@ class Orchestrator:
             await self._start_ai()
 
         self._started = True
+
+        # Save state for project-level cleanup
+        self._save_state()
+
         logger.info("Orchestrator ready")
+
+    def _save_state(self):
+        """Save orchestrator state for project-level cleanup."""
+        if not self._project_root:
+            return
+
+        state = {
+            "project_root": str(self._project_root),
+            "project_hash": get_project_hash(self._project_root),
+            "started_at": time.time(),
+            "pids": self._pids,
+            "ports": self._ports,
+        }
+
+        save_project_state(self._project_root, state)
+        logger.debug(f"Saved project state: {self._pids}")
 
     async def stop(self):
         """Stop all managed services."""
@@ -113,8 +145,13 @@ class Orchestrator:
         project_root = Path(config.project_root)
         project_root.mkdir(parents=True, exist_ok=True)
 
-        # Use local package if available, otherwise fall back to npx
+        # Priority order:
+        # 1. Local development package (if package_path specified)
+        # 2. Installed in ~/.mrmd/node_modules (preferred for production)
+        # 3. Fall back to npx (downloads on demand)
+
         if package_path and package_path.exists():
+            # Development mode: use local package
             command = [
                 "node",
                 str(package_path / "bin" / "cli.js"),
@@ -122,9 +159,18 @@ class Orchestrator:
                 str(project_root.absolute()),
             ]
             cwd = str(package_path)
+        elif (node_bin := get_node_bin("mrmd-sync")):
+            # Production: use installed package from ~/.mrmd/node_modules
+            logger.debug(f"Using installed mrmd-sync: {node_bin}")
+            command = [
+                str(node_bin),
+                "--port", str(config.port),
+                str(project_root.absolute()),
+            ]
+            cwd = str(project_root)
         else:
-            # Fall back to npx (uses npm package)
-            logger.info("Using npx mrmd-sync (npm package)")
+            # Fall back to npx (downloads on demand)
+            logger.info("Using npx mrmd-sync (not installed locally)")
             command = [
                 "npx", "mrmd-sync",
                 "--port", str(config.port),
@@ -132,13 +178,18 @@ class Orchestrator:
             ]
             cwd = str(project_root)
 
-        await self.processes.start(
+        info = await self.processes.start(
             name="mrmd-sync",
             command=command,
             cwd=cwd,
             wait_for="Server started",  # JSON output contains this
             timeout=30.0,  # npx may take longer to download
         )
+
+        # Track PID and port for project-level cleanup
+        if info and info.pid:
+            self._pids["sync"] = info.pid
+            self._ports["sync"] = config.port
 
     async def _start_runtime(self, language: str, runtime_config):
         """Start a runtime server."""
@@ -153,7 +204,7 @@ class Orchestrator:
 
         The daemon:
         - Runs as an independent process (survives orchestrator restart)
-        - Registers in ~/.mrmd/runtimes/ for discovery
+        - Registers in project-specific state for cleanup
         - Variables persist across orchestrator restarts
         - GPU memory released only when explicitly killed
         """
@@ -175,6 +226,12 @@ class Orchestrator:
             # Update config with actual URL from daemon
             runtime_config.url = info.get("url")
             logger.info(f"Python runtime ready: {info.get('url')} (PID {info.get('pid')})")
+
+            # Track PID and port for project-level cleanup
+            if info.get("pid"):
+                self._pids["runtime"] = info.get("pid")
+            if info.get("port"):
+                self._ports["runtime"] = info.get("port")
         else:
             logger.error("Failed to start Python runtime")
 
@@ -221,7 +278,7 @@ class Orchestrator:
                 logger.info("mrmd-ai not installed, AI features disabled")
                 return
 
-        await self.processes.start(
+        info = await self.processes.start(
             name="mrmd-ai",
             command=command,
             cwd=cwd,
@@ -229,6 +286,11 @@ class Orchestrator:
             wait_for="Uvicorn running",
             timeout=15.0,
         )
+
+        # Track PID and port for project-level cleanup
+        if info and info.pid:
+            self._pids["ai"] = info.pid
+            self._ports["ai"] = config.port
 
     async def start_monitor(self, doc_name: str) -> bool:
         """
@@ -252,8 +314,13 @@ class Orchestrator:
 
         process_name = f"monitor:{doc_name}"
 
-        # Use local package if available, otherwise fall back to npx
+        # Priority order:
+        # 1. Local development package (if package_path specified)
+        # 2. Installed in ~/.mrmd/node_modules (preferred for production)
+        # 3. Fall back to npx (downloads on demand)
+
         if package_path and package_path.exists():
+            # Development mode: use local package
             command = [
                 "node",
                 str(package_path / "bin" / "cli.js"),
@@ -261,8 +328,17 @@ class Orchestrator:
                 self.config.sync.url,
             ]
             cwd = str(package_path)
+        elif (node_bin := get_node_bin("mrmd-monitor")):
+            # Production: use installed package from ~/.mrmd/node_modules
+            logger.debug(f"Using installed mrmd-monitor: {node_bin}")
+            command = [
+                str(node_bin),
+                "--doc", doc_name,
+                self.config.sync.url,
+            ]
+            cwd = str(Path.cwd())
         else:
-            # Fall back to npx (uses npm package)
+            # Fall back to npx (downloads on demand)
             logger.info(f"Using npx mrmd-monitor for {doc_name}")
             command = [
                 "npx", "mrmd-monitor",

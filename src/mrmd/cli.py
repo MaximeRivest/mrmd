@@ -5,12 +5,20 @@ mrmd CLI
 Starts all mrmd services and provides HTTP API for management.
 
 Usage:
-    mrmd                                     # Start with defaults
-    mrmd --port 3000                         # Custom HTTP port
-    mrmd --no-editor                         # Don't serve editor
-    mrmd --sync-url ws://remote              # Connect to remote sync (don't start local)
-    mrmd --session my-notebook               # Auto-start session (shared Python)
-    mrmd --session my-notebook:dedicated     # Auto-start session with dedicated Python runtime
+    mrmd                          # Start in current project, open README.md
+    mrmd .                        # Same as above
+    mrmd path/to/file.md          # Open specific file in its project
+    mrmd ~/random/notes.md        # If no project found, use scratch project
+
+Project Resolution:
+    - Walks up from target looking for .git, .venv, pyproject.toml, etc.
+    - Stops at home directory
+    - If no project found, uses ~/Projects/scratch (created if needed)
+
+Options:
+    mrmd --port 3000              # Custom HTTP port
+    mrmd --no-editor              # Don't serve editor
+    mrmd --session my-notebook    # Auto-start session
 """
 
 import argparse
@@ -22,9 +30,16 @@ from pathlib import Path
 
 from .config import OrchestratorConfig, SyncConfig, RuntimeConfig, MonitorConfig, EditorConfig, AiConfig
 from .orchestrator import Orchestrator
-from .project import find_project_root
+from .project import (
+    resolve_target,
+    get_initial_document,
+    get_project_info,
+    get_project_hash,
+    find_venv,
+)
+from .venv import ensure_venv, ensure_node_deps
 from .server import run_server
-from .cleanup import cleanup_all, find_free_port
+from .cleanup import cleanup_project, find_free_port
 
 # Setup logging
 logging.basicConfig(
@@ -39,23 +54,33 @@ def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         prog="mrmd",
-        description="Orchestrator for mrmd services - sync, monitors, and runtimes",
+        description="Markdown notebook editor with live Python execution",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  mrmd                              Start all services with defaults
-  mrmd --port 3000                  Serve editor on custom port
-  mrmd --no-sync                    Don't start mrmd-sync (connect to existing)
-  mrmd --sync-url ws://remote:41444 Connect to remote sync server
+  mrmd                           Start in current project
+  mrmd .                         Same as above
+  mrmd notes.md                  Open notes.md in current project
+  mrmd ~/docs/ideas.md           Open file (uses scratch if no project)
+  mrmd /path/to/project          Start in specific directory
+
+Project Detection:
+  mrmd looks for .git, .venv, pyproject.toml, package.json, etc.
+  If no project found before reaching ~, uses ~/Projects/scratch.
 
 The orchestrator starts:
-  - mrmd-sync (Yjs sync server) on ws://localhost:41444
-  - mrmd-python (Python runtime) on http://localhost:41765
-  - HTTP server for editor and API on http://localhost:41580
-
-Monitors are started on-demand via the API:
-  POST /api/monitors {"doc": "my-notebook"}
+  - mrmd-sync (Yjs sync server)
+  - mrmd-python (Python runtime)
+  - HTTP server for editor and API
         """,
+    )
+
+    # Positional argument: target file or directory
+    parser.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="File to open or directory to start in (default: current directory)",
     )
 
     # Paths
@@ -64,30 +89,30 @@ Monitors are started on-demand via the API:
         help="Path to mrmd-packages directory (auto-detected by default)",
     )
 
-    # Ports
+    # Ports - now default to 0 (auto-assign)
     parser.add_argument(
         "--port", "-p",
         type=int,
-        default=41580,
-        help="HTTP server port for editor and API (default: 41580)",
+        default=0,
+        help="HTTP server port for editor and API (default: auto-assign)",
     )
     parser.add_argument(
         "--sync-port",
         type=int,
-        default=41444,
-        help="WebSocket port for mrmd-sync (default: 41444)",
+        default=0,
+        help="WebSocket port for mrmd-sync (default: auto-assign)",
     )
     parser.add_argument(
         "--runtime-port",
         type=int,
-        default=41765,
-        help="HTTP port for Python runtime (default: 41765)",
+        default=0,
+        help="HTTP port for Python runtime (default: auto-assign)",
     )
     parser.add_argument(
         "--ai-port",
         type=int,
-        default=51790,
-        help="HTTP port for AI server (default: 51790)",
+        default=0,
+        help="HTTP port for AI server (default: auto-assign)",
     )
 
     # Remote services
@@ -163,9 +188,7 @@ Monitors are started on-demand via the API:
     parser.add_argument(
         "--venv",
         help="Path to virtual environment for dedicated sessions. "
-             "If not specified, auto-detects .venv or venv in project root. "
-             "Dedicated sessions with venv run as separate processes - "
-             "destroying them releases GPU memory (useful for vLLM, etc.)",
+             "If not specified, auto-detects .venv or venv in project root.",
     )
 
     # Runtime management
@@ -187,17 +210,28 @@ Monitors are started on-demand via the API:
         action="store_true",
         help="Skip automatic cleanup of stale processes and PID files",
     )
+    parser.add_argument(
+        "--no-venv-setup",
+        action="store_true",
+        help="Skip automatic venv creation and dependency installation",
+    )
 
     return parser.parse_args()
 
 
-def build_config(args) -> OrchestratorConfig:
+def build_config(args, project_root: Path, venv_path: Path = None) -> OrchestratorConfig:
     """Build configuration from arguments."""
     config = OrchestratorConfig()
 
     # Package path
     if args.packages:
         config.packages_dir = args.packages
+
+    # Allocate ports (auto-assign by default)
+    editor_port = args.port if args.port else find_free_port()
+    sync_port = args.sync_port if args.sync_port else find_free_port()
+    runtime_port = args.runtime_port if args.runtime_port else find_free_port()
+    ai_port = args.ai_port if args.ai_port else find_free_port()
 
     # Sync config
     if args.sync_url:
@@ -208,15 +242,13 @@ def build_config(args) -> OrchestratorConfig:
     elif args.no_sync:
         config.sync = SyncConfig(
             managed=False,
-            url=f"ws://localhost:{args.sync_port}",
+            url=f"ws://localhost:{sync_port}",
         )
     else:
-        # Use project root as sync directory
-        project_root = find_project_root()
         config.sync = SyncConfig(
             managed=True,
-            url=f"ws://localhost:{args.sync_port}",
-            port=args.sync_port,
+            url=f"ws://localhost:{sync_port}",
+            port=sync_port,
             project_root=str(project_root),
         )
 
@@ -233,7 +265,7 @@ def build_config(args) -> OrchestratorConfig:
         config.runtimes = {
             "python": RuntimeConfig(
                 managed=False,
-                url=f"http://localhost:{args.runtime_port}/mrp/v1",
+                url=f"http://localhost:{runtime_port}/mrp/v1",
                 language="python",
             )
         }
@@ -241,8 +273,8 @@ def build_config(args) -> OrchestratorConfig:
         config.runtimes = {
             "python": RuntimeConfig(
                 managed=True,
-                url=f"http://localhost:{args.runtime_port}/mrp/v1",
-                port=args.runtime_port,
+                url=f"http://localhost:{runtime_port}/mrp/v1",
+                port=runtime_port,
                 language="python",
             )
         }
@@ -255,7 +287,7 @@ def build_config(args) -> OrchestratorConfig:
     # Editor config
     config.editor = EditorConfig(
         enabled=not args.no_editor,
-        port=args.port,
+        port=editor_port,
     )
 
     # AI config
@@ -268,14 +300,14 @@ def build_config(args) -> OrchestratorConfig:
     elif args.no_ai:
         config.ai = AiConfig(
             managed=False,
-            url=f"http://localhost:{args.ai_port}",
+            url=f"http://localhost:{ai_port}",
             default_juice_level=args.juice_level,
         )
     else:
         config.ai = AiConfig(
             managed=True,
-            url=f"http://localhost:{args.ai_port}",
-            port=args.ai_port,
+            url=f"http://localhost:{ai_port}",
+            port=ai_port,
             default_juice_level=args.juice_level,
         )
 
@@ -291,49 +323,68 @@ def build_config(args) -> OrchestratorConfig:
 async def async_main(args):
     """Async main entry point."""
 
-    # Get project root early for cleanup
-    project_root = find_project_root()
+    # Resolve target to project root and optional file
+    cwd = Path.cwd()
+    project_root, target_file = resolve_target(args.target)
 
-    # Cleanup stale processes and PID files (unless disabled)
+    # Get project info
+    project_info = get_project_info(project_root)
+    project_hash = get_project_hash(project_root)
+
+    logger.info(f"Project: {project_root.name} ({project_hash[:8]})")
+    if project_info.get('is_scratch'):
+        logger.info("Using scratch project (no project root found)")
+
+    # Ensure venv exists (unless disabled)
+    venv_path = None
+    if not args.no_venv_setup:
+        venv_path = ensure_venv(project_root)
+        if venv_path:
+            logger.info(f"Using venv: {venv_path}")
+        else:
+            logger.warning("No venv available, some features may not work")
+
+        # Ensure Node.js dependencies are installed and up to date
+        node_bin_dir = ensure_node_deps(check_updates=True)
+        if node_bin_dir:
+            logger.debug(f"Node.js deps ready: {node_bin_dir}")
+        else:
+            logger.warning("Node.js deps not available, will use npx (slower)")
+
+    # Cleanup stale processes for THIS project only (unless disabled)
     if not args.no_cleanup:
-        ports_to_check = [args.port, args.sync_port, args.runtime_port, args.ai_port]
-        results = cleanup_all(str(project_root), ports_to_check)
+        results = cleanup_project(project_root)
         if results['sync_cleaned']:
             logger.info("Cleaned up stale mrmd-sync state")
         if results['runtimes_cleaned']:
             logger.info(f"Cleaned up {results['runtimes_cleaned']} stale runtime(s)")
-        if results['ports_cleaned']:
-            logger.info(f"Freed ports: {results['ports_cleaned']}")
+        if results['processes_cleaned']:
+            logger.info(f"Freed ports: {results['processes_cleaned']}")
 
-    # Build config
-    config = build_config(args)
-
-    # Auto-find free ports if defaults are in use and still occupied
-    # This handles cases where cleanup couldn't free the port (different process)
-    if args.port == 41580 and find_free_port(args.port, 1) != args.port:
-        new_port = find_free_port(args.port)
-        logger.info(f"Port {args.port} in use, using {new_port} instead")
-        config.editor.port = new_port
-
-    if args.sync_port == 41444 and find_free_port(args.sync_port, 1) != args.sync_port:
-        new_port = find_free_port(args.sync_port)
-        logger.info(f"Port {args.sync_port} in use, using {new_port} instead")
-        config.sync.port = new_port
-        config.sync.url = f"ws://localhost:{new_port}"
+    # Build config with auto-assigned ports
+    config = build_config(args, project_root, venv_path)
 
     # Set log level
     logging.getLogger().setLevel(getattr(logging, config.log_level.upper()))
 
-    # Create orchestrator with optional explicit venv
-    # If --venv is provided, it overrides auto-detection
+    # Determine initial document to open
+    initial_doc = get_initial_document(project_root, target_file, cwd)
+    logger.info(f"Opening document: {initial_doc}")
+
+    # Create orchestrator
     orchestrator = Orchestrator(config)
+
+    # Set project root and venv
+    orchestrator._project_root = project_root
     if args.venv:
         orchestrator._project_venv = str(Path(args.venv).expanduser().resolve())
         logger.info(f"Using explicit venv: {orchestrator._project_venv}")
+    elif venv_path:
+        orchestrator._project_venv = str(venv_path)
 
     # Setup shutdown handler with force-exit on second Ctrl+C
     shutdown_event = asyncio.Event()
-    shutdown_count = [0]  # Use list for mutable closure
+    shutdown_count = [0]
 
     def handle_signal():
         shutdown_count[0] += 1
@@ -343,7 +394,7 @@ async def async_main(args):
         else:
             logger.info("Force exit!")
             import os
-            os._exit(0)  # Use os._exit to avoid cleanup delays
+            os._exit(0)
 
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -353,7 +404,7 @@ async def async_main(args):
         # Start orchestrator
         await orchestrator.start()
 
-        # Auto-start monitors if specified (legacy flag, creates session with shared runtime)
+        # Auto-start monitors if specified (legacy flag)
         if args.monitors:
             for doc in args.monitors:
                 await orchestrator.create_session(doc, python="shared")
@@ -361,7 +412,6 @@ async def async_main(args):
         # Auto-start sessions if specified
         if args.sessions:
             for session_spec in args.sessions:
-                # Parse doc:mode format
                 if ":" in session_spec:
                     parts = session_spec.rsplit(":", 1)
                     doc = parts[0]
@@ -373,47 +423,46 @@ async def async_main(args):
                     doc = session_spec
                     mode = "shared"
 
-                # Pass explicit venv if provided, otherwise let orchestrator use detected venv
                 session_venv = args.venv if args.venv else None
                 await orchestrator.create_session(doc, python=mode, venv=session_venv)
-                logger.info(f"Started session for {doc} (python={mode}, venv={session_venv or orchestrator.project_venv or 'none'})")
+                logger.info(f"Started session for {doc} (python={mode})")
 
         # Print status
         urls = orchestrator.get_urls()
         sessions = orchestrator.get_sessions()
         juice_names = ["Quick", "Balanced", "Deep", "Maximum", "Ultimate"]
+
         print()
-        print("\033[36m  mrmd orchestrator\033[0m")
+        print(f"\033[36m  mrmd - {project_root.name}\033[0m")
         print("  " + "─" * 40)
+        print(f"  Project:  {project_root}")
         print(f"  Editor:   http://localhost:{config.editor.port}")
         print(f"  Sync:     {urls['sync']}")
-        print(f"  Runtime:  {urls['runtimes'].get('python', 'not running')} (shared)")
+        print(f"  Runtime:  {urls['runtimes'].get('python', 'not running')}")
         if orchestrator.project_venv:
             print(f"  Venv:     {orchestrator.project_venv}")
         if urls.get('ai'):
             print(f"  AI:       {urls['ai']} (juice={juice_names[config.ai.default_juice_level]})")
-        print(f"  API:      http://localhost:{config.editor.port}/api/status")
+        print(f"  Document: {initial_doc}")
+        print()
 
         # Show active sessions
         if sessions:
-            print()
             print("  \033[36mActive Sessions:\033[0m")
             for doc, session in sessions.items():
                 runtime_info = "dedicated" if session.dedicated_runtime else "shared"
                 port_info = f" (port {session.runtime_port})" if session.runtime_port else ""
                 venv_info = f", venv" if session.venv else ""
                 print(f"    {doc}: python={runtime_info}{port_info}{venv_info}")
-
-        print()
-        print("  Sessions can be started via API:")
-        print(f"    curl -X POST http://localhost:{config.editor.port}/api/sessions \\")
-        print(f"      -H 'Content-Type: application/json' \\")
-        print(f"      -d '{{\"doc\": \"my-notebook\", \"python\": \"dedicated\"}}'")
-        print()
+            print()
 
         # Run server (blocks until shutdown)
         server_task = asyncio.create_task(
-            run_server(orchestrator, port=config.editor.port)
+            run_server(
+                orchestrator,
+                port=config.editor.port,
+                initial_doc=initial_doc,
+            )
         )
 
         # Wait for shutdown signal
@@ -427,7 +476,7 @@ async def async_main(args):
             pass
 
     finally:
-        # Stop orchestrator (this now handles runtime cleanup based on keep_runtime)
+        # Stop orchestrator
         orchestrator._keep_runtime = getattr(args, 'keep_runtime', False)
         await orchestrator.stop()
 

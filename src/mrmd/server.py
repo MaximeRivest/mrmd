@@ -155,7 +155,11 @@ def create_app(orchestrator: Orchestrator) -> FastAPI:
     @app.get("/api/urls")
     async def urls():
         """Get URLs for all services."""
-        return orchestrator.get_urls()
+        result = orchestrator.get_urls()
+        # Include initial document if set
+        if hasattr(orchestrator, '_initial_doc'):
+            result['initial_doc'] = orchestrator._initial_doc
+        return result
 
     # --- Monitor Management ---
 
@@ -972,9 +976,13 @@ async def run_server(
     orchestrator: Orchestrator,
     host: str = "0.0.0.0",
     port: int = 8080,
+    initial_doc: str = "untitled",
 ):
     """Run the orchestrator HTTP server."""
     import uvicorn
+
+    # Store initial doc in orchestrator for API access
+    orchestrator._initial_doc = initial_doc
 
     app = create_app(orchestrator)
 
