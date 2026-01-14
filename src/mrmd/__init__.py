@@ -12,7 +12,7 @@ Python API:
     from mrmd import find_project_root, get_project_info
 """
 
-__version__ = "0.9.7"
+__version__ = "0.9.12"
 
 from .orchestrator import Orchestrator
 from .config import OrchestratorConfig
