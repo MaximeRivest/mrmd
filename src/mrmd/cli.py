@@ -513,6 +513,7 @@ async def async_main(args):
                 orchestrator,
                 port=config.editor.port,
                 initial_doc=initial_doc,
+                verbose=args.verbose,
             )
         )
 

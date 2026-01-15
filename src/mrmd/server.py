@@ -1103,27 +1103,36 @@ def mount_editor(app: FastAPI, editor_path: Path, orchestrator: "Orchestrator" =
             height: 100%;
             background: #1e1e1e;
         }}
+        /* Main container - full viewport with flex layout */
         #editor {{
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 3rem 2rem 2rem 2rem;
-            min-height: 100%;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
         }}
-        /* Make the CodeMirror editor blend with the zen background */
-        #editor .cm-editor {{
+        /* Studio wrapper - flex grow */
+        #editor .mrmd-studio {{
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }}
+        /* Editor area - centered content */
+        #editor .mrmd-studio__editor {{
+            flex: 1;
+            overflow: auto;
+            display: flex;
+            justify-content: center;
+        }}
+        /* The actual CodeMirror container - centered with max-width */
+        #editor .mrmd-studio__editor > .cm-editor {{
+            width: 100%;
+            max-width: 900px;
+            padding: 3rem 2rem 2rem 2rem;
             background: transparent;
         }}
-        #editor .cm-scroller {{
-            padding: 0;
-        }}
-        /* Status bar at bottom */
+        /* Status bar - full width at bottom */
         #editor .mrmd-studio__statusbar {{
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: #1a1a1a;
-            border-top: 1px solid #333;
+            flex-shrink: 0;
         }}
     </style>
 </head>
@@ -1181,27 +1190,36 @@ def mount_editor(app: FastAPI, editor_path: Path, orchestrator: "Orchestrator" =
             height: 100%;
             background: #1e1e1e;
         }}
+        /* Main container - full viewport with flex layout */
         #editor {{
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 3rem 2rem 2rem 2rem;
-            min-height: 100%;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
         }}
-        /* Make the CodeMirror editor blend with the zen background */
-        #editor .cm-editor {{
+        /* Studio wrapper - flex grow */
+        #editor .mrmd-studio {{
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }}
+        /* Editor area - centered content */
+        #editor .mrmd-studio__editor {{
+            flex: 1;
+            overflow: auto;
+            display: flex;
+            justify-content: center;
+        }}
+        /* The actual CodeMirror container - centered with max-width */
+        #editor .mrmd-studio__editor > .cm-editor {{
+            width: 100%;
+            max-width: 900px;
+            padding: 3rem 2rem 2rem 2rem;
             background: transparent;
         }}
-        #editor .cm-scroller {{
-            padding: 0;
-        }}
-        /* Status bar at bottom */
+        /* Status bar - full width at bottom */
         #editor .mrmd-studio__statusbar {{
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: #1a1a1a;
-            border-top: 1px solid #333;
+            flex-shrink: 0;
         }}
     </style>
 </head>
@@ -1228,6 +1246,7 @@ async def run_server(
     host: str = "0.0.0.0",
     port: int = 8080,
     initial_doc: str = "untitled",
+    verbose: bool = False,
 ):
     """Run the orchestrator HTTP server."""
     import uvicorn
@@ -1242,11 +1261,15 @@ async def run_server(
         editor_path = Path(orchestrator.config.editor.package_path) if orchestrator.config.editor.package_path else None
         mount_editor(app, editor_path, orchestrator)
 
+    # In non-verbose mode, suppress uvicorn logs completely
+    log_level = "info" if verbose else "error"
+
     config = uvicorn.Config(
         app,
         host=host,
         port=port,
-        log_level="info",
+        log_level=log_level,
+        access_log=verbose,  # Disable access logs in non-verbose mode
     )
     server = uvicorn.Server(config)
     await server.serve()
