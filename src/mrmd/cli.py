@@ -393,9 +393,6 @@ async def async_main(args):
     # Build config with auto-assigned ports
     config = build_config(args, project_root, venv_path)
 
-    # Set log level
-    logging.getLogger().setLevel(getattr(logging, config.log_level.upper()))
-
     # Determine initial document to open
     initial_doc = get_initial_document(project_root, target_file, cwd)
     logger.info(f"Opening document: {initial_doc}")

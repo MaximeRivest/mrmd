@@ -1096,8 +1096,35 @@ def mount_editor(app: FastAPI, editor_path: Path, orchestrator: "Orchestrator" =
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>mrmd</title>
     <style>
-        body {{ margin: 0; padding: 0; }}
-        #editor {{ width: 100vw; height: 100vh; }}
+        * {{ box-sizing: border-box; }}
+        html, body {{
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            background: #1e1e1e;
+        }}
+        #editor {{
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 3rem 2rem 2rem 2rem;
+            min-height: 100%;
+        }}
+        /* Make the CodeMirror editor blend with the zen background */
+        #editor .cm-editor {{
+            background: transparent;
+        }}
+        #editor .cm-scroller {{
+            padding: 0;
+        }}
+        /* Status bar at bottom */
+        #editor .mrmd-studio__statusbar {{
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #1a1a1a;
+            border-top: 1px solid #333;
+        }}
     </style>
 </head>
 <body>
@@ -1147,8 +1174,35 @@ def mount_editor(app: FastAPI, editor_path: Path, orchestrator: "Orchestrator" =
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>mrmd</title>
     <style>
-        body {{ margin: 0; padding: 0; }}
-        #editor {{ width: 100vw; height: 100vh; }}
+        * {{ box-sizing: border-box; }}
+        html, body {{
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            background: #1e1e1e;
+        }}
+        #editor {{
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 3rem 2rem 2rem 2rem;
+            min-height: 100%;
+        }}
+        /* Make the CodeMirror editor blend with the zen background */
+        #editor .cm-editor {{
+            background: transparent;
+        }}
+        #editor .cm-scroller {{
+            padding: 0;
+        }}
+        /* Status bar at bottom */
+        #editor .mrmd-studio__statusbar {{
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #1a1a1a;
+            border-top: 1px solid #333;
+        }}
     </style>
 </head>
 <body>
