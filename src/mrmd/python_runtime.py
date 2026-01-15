@@ -1,24 +1,16 @@
 """
-Python Runtime Management - uses mrmd-python daemon directly.
+Python Runtime Management - wrapper around runtimes module.
 
-This module provides a simple interface to mrmd-python daemons.
-Runtimes are independent processes that survive orchestrator restarts.
+Provides backwards-compatible interface for Python runtime management.
 """
 
 import logging
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from . import runtimes
 
-# Import mrmd-python functions directly (it's a dependency)
-from mrmd_python.runtime_daemon import (
-    spawn_daemon,
-    kill_runtime as _kill_runtime,
-    list_runtimes as _list_runtimes,
-    read_runtime_info,
-    is_runtime_alive as _is_alive,
-)
+logger = logging.getLogger(__name__)
 
 
 def start_runtime(
@@ -28,40 +20,26 @@ def start_runtime(
     port: int = 0,
 ) -> Optional[dict]:
     """
-    Start a Python runtime daemon.
+    Start a Python runtime.
 
     If already running, returns existing runtime info.
 
     Args:
         runtime_id: Unique ID for this runtime
-        venv: Virtual environment path (auto-detected if not specified)
+        venv: Virtual environment path (uses that venv's Python)
         cwd: Working directory
         port: Port to use (0 = auto-assign)
 
     Returns:
         Runtime info dict with url, pid, port, etc. or None if failed
     """
-    try:
-        # Resolve paths
-        resolved_venv = str(Path(venv).expanduser().resolve()) if venv else None
-        resolved_cwd = str(Path(cwd).expanduser().resolve()) if cwd else None
-
-        info = spawn_daemon(
-            runtime_id=runtime_id,
-            venv=resolved_venv,
-            cwd=resolved_cwd,
-            port=port,
-        )
-        logger.info(f"Started runtime {runtime_id}: {info.get('url')}")
-        return info
-    except Exception as e:
-        logger.error(f"Failed to start runtime {runtime_id}: {e}")
-        return None
+    info = runtimes.start_runtime(runtime_id, venv=venv, cwd=cwd, port=port)
+    return info.to_dict() if info else None
 
 
 def stop_runtime(runtime_id: str) -> bool:
     """
-    Stop a Python runtime daemon.
+    Stop a Python runtime.
 
     This kills the process, releasing all memory including GPU/VRAM.
 
@@ -71,30 +49,17 @@ def stop_runtime(runtime_id: str) -> bool:
     Returns:
         True if stopped (or wasn't running)
     """
-    try:
-        result = _kill_runtime(runtime_id)
-        if result:
-            logger.info(f"Stopped runtime {runtime_id}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to stop runtime {runtime_id}: {e}")
-        return False
+    return runtimes.stop_runtime(runtime_id)
 
 
 def stop_all_runtimes() -> int:
     """
-    Stop all Python runtime daemons.
+    Stop all Python runtimes.
 
     Returns:
         Number of runtimes stopped
     """
-    runtimes = _list_runtimes()
-    killed = 0
-    for rt in runtimes:
-        if _kill_runtime(rt["id"]):
-            killed += 1
-    logger.info(f"Stopped {killed} runtime(s)")
-    return killed
+    return runtimes.stop_all_runtimes()
 
 
 def list_runtimes() -> list[dict]:
@@ -104,7 +69,7 @@ def list_runtimes() -> list[dict]:
     Returns:
         List of runtime info dicts
     """
-    return _list_runtimes()
+    return runtimes.list_runtimes()
 
 
 def get_runtime_info(runtime_id: str) -> Optional[dict]:
@@ -114,21 +79,23 @@ def get_runtime_info(runtime_id: str) -> Optional[dict]:
     Returns:
         Runtime info dict or None if not found
     """
-    info = read_runtime_info(runtime_id)
+    info = runtimes.get_runtime(runtime_id)
     if info:
-        info["alive"] = _is_alive(runtime_id)
-    return info
+        result = info.to_dict()
+        result["alive"] = runtimes.is_runtime_alive(runtime_id)
+        return result
+    return None
 
 
 def is_runtime_alive(runtime_id: str) -> bool:
     """Check if a runtime is still running."""
-    return _is_alive(runtime_id)
+    return runtimes.is_runtime_alive(runtime_id)
 
 
 def get_runtime_url(runtime_id: str) -> Optional[str]:
     """Get the URL for a runtime."""
-    info = get_runtime_info(runtime_id)
-    return info.get("url") if info else None
+    info = runtimes.get_runtime(runtime_id)
+    return info.url if info else None
 
 
 def ensure_runtime(
@@ -150,9 +117,10 @@ def ensure_runtime(
         Runtime URL or None if failed
     """
     # Check if already running
-    if is_runtime_alive(runtime_id):
-        return get_runtime_url(runtime_id)
+    if runtimes.is_runtime_alive(runtime_id):
+        info = runtimes.get_runtime(runtime_id)
+        return info.url if info else None
 
     # Start it
-    info = start_runtime(runtime_id, venv=venv, cwd=cwd)
-    return info.get("url") if info else None
+    info = runtimes.start_runtime(runtime_id, venv=venv, cwd=cwd)
+    return info.url if info else None

@@ -212,24 +212,148 @@ def create_app(orchestrator: Orchestrator) -> FastAPI:
 
         return result
 
+    @app.post("/api/runtimes")
+    async def create_runtime(request: dict):
+        """
+        Start a new Python runtime.
+
+        Request body:
+            id: Optional runtime ID (auto-generated if not provided)
+            venv: Optional path to virtual environment
+            cwd: Optional working directory
+
+        Returns:
+            Runtime info with id, url, port, pid, etc.
+        """
+        from . import python_runtime
+
+        runtime_id = request.get("id")
+        if not runtime_id:
+            # Generate unique ID from venv path
+            venv = request.get("venv")
+            if venv:
+                # Use hash of full path for uniqueness (e.g., "venv-a1b2c3")
+                import hashlib
+                venv_hash = hashlib.md5(venv.encode()).hexdigest()[:8]
+                venv_name = Path(venv).parent.name  # Parent folder name (project name)
+                runtime_id = f"{venv_name}-{venv_hash}"
+            else:
+                import time
+                runtime_id = f"runtime-{int(time.time())}"
+
+        venv = request.get("venv")
+        cwd = request.get("cwd", str(Path.cwd()))
+
+        info = python_runtime.start_runtime(
+            runtime_id=runtime_id,
+            venv=venv,
+            cwd=cwd,
+        )
+
+        if info:
+            return {
+                "success": True,
+                "runtime": info,
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to start runtime"
+            )
+
     @app.delete("/api/runtimes/{runtime_id}")
     async def kill_runtime(runtime_id: str):
         """
         Kill a runtime by ID.
 
-        For dedicated runtimes, this destroys the session.
-        For shared runtime, this kills the daemon (will restart on next execution).
+        This kills the runtime process directly.
+        For shared runtime, it will restart on next execution.
         """
         from . import python_runtime
 
-        if runtime_id == "shared":
-            # Kill the shared runtime daemon
-            success = python_runtime.stop_runtime("shared")
-            return {"id": runtime_id, "killed": success, "message": "Shared runtime killed. Will restart on next execution."}
+        # Kill the runtime process
+        success = python_runtime.stop_runtime(runtime_id)
+        if success:
+            logger.info(f"Killed runtime: {runtime_id}")
+            message = "Runtime killed."
+            if runtime_id == "shared":
+                message += " Will restart on next execution."
         else:
-            # For dedicated runtimes, destroy the session
-            success = await orchestrator.destroy_session(runtime_id)
-            return {"id": runtime_id, "killed": success, "message": f"Dedicated runtime for '{runtime_id}' destroyed."}
+            logger.warning(f"Failed to kill runtime: {runtime_id}")
+            message = "Runtime not found or already stopped."
+
+        return {"id": runtime_id, "killed": success, "message": message}
+
+    # --- Virtual Environment Detection ---
+
+    @app.get("/api/venvs")
+    async def list_venvs(deep: bool = Query(False, description="Do deep search with ripgrep")):
+        """
+        Detect available virtual environments.
+
+        Searches for venvs in:
+        - Currently running runtimes
+        - Near the project root
+        - Cached venvs from previous sessions
+        - (Optional) Deep search with ripgrep
+
+        Query params:
+            deep: If true, do a broader ripgrep search
+
+        Returns:
+            List of detected venvs with their paths and Python versions
+        """
+        from . import venv_discovery
+
+        project_info = orchestrator.get_project_info()
+        project_root = Path(project_info.get("root", ".")).resolve()
+
+        venvs = venv_discovery.discover_venvs(
+            start_path=project_root,
+            include_cached=True,
+            include_running=True,
+            deep_search=deep,
+        )
+
+        # Add system Python as fallback option
+        venvs.append({
+            "path": None,
+            "name": "System Python",
+            "python": sys.executable,
+            "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            "source": "system",
+        })
+
+        return {"venvs": venvs, "project_root": str(project_root)}
+
+    @app.post("/api/venvs/search")
+    async def search_venvs(request: dict = None):
+        """
+        Trigger a deep venv search and update cache.
+
+        Body:
+            search_root: Optional starting path for search
+
+        Returns:
+            List of newly discovered venvs
+        """
+        from . import venv_discovery
+
+        search_root = None
+        if request and request.get("search_root"):
+            search_root = Path(request["search_root"])
+
+        # Do a deep search
+        venvs = venv_discovery.search_venvs_ripgrep(search_root, max_results=30)
+
+        return {"venvs": venvs, "count": len(venvs)}
+
+    @app.delete("/api/venvs/cache")
+    async def clear_venv_cache():
+        """Clear the venv cache."""
+        from . import venv_discovery
+        venv_discovery.clear_cache()
+        return {"status": "cleared"}
 
     # --- Monitor Management ---
 
@@ -963,6 +1087,7 @@ def mount_editor(app: FastAPI, editor_path: Path, orchestrator: "Orchestrator" =
         async def root(request: Request):
             """Serve studio from local dist."""
             orchestrator_url = f"http://{request.headers.get('host', 'localhost:41580')}"
+            initial_doc = getattr(orchestrator, '_initial_doc', 'untitled') if orchestrator else 'untitled'
             return HTMLResponse(
                 content=f"""<!DOCTYPE html>
 <html>
@@ -982,7 +1107,7 @@ def mount_editor(app: FastAPI, editor_path: Path, orchestrator: "Orchestrator" =
 
         const studio = createStudio(document.getElementById('editor'), {{
             orchestratorUrl: '{orchestrator_url}',
-            doc: 'untitled',
+            document: '{initial_doc}',
         }});
     </script>
 </body>
@@ -1004,6 +1129,7 @@ def mount_editor(app: FastAPI, editor_path: Path, orchestrator: "Orchestrator" =
             # Get URLs from orchestrator config
             sync_url = "ws://localhost:41444"
             runtime_url = "http://localhost:41765/mrp/v1"
+            initial_doc = 'untitled'
             if orchestrator:
                 sync_url = orchestrator.config.sync.url
                 runtime_url = orchestrator.config.runtimes.get("python", {})
@@ -1011,6 +1137,7 @@ def mount_editor(app: FastAPI, editor_path: Path, orchestrator: "Orchestrator" =
                     runtime_url = runtime_url.url
                 else:
                     runtime_url = "http://localhost:41765/mrp/v1"
+                initial_doc = getattr(orchestrator, '_initial_doc', 'untitled')
 
             return HTMLResponse(
                 content=f"""<!DOCTYPE html>
@@ -1033,7 +1160,7 @@ def mount_editor(app: FastAPI, editor_path: Path, orchestrator: "Orchestrator" =
             orchestratorUrl: '{orchestrator_url}',
             syncUrl: '{sync_url}',
             runtimeUrl: '{runtime_url}',
-            doc: 'untitled',
+            document: '{initial_doc}',
         }});
     </script>
 </body>
