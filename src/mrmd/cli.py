@@ -26,6 +26,7 @@ import asyncio
 import logging
 import signal
 import sys
+import webbrowser
 from pathlib import Path
 
 from .config import OrchestratorConfig, SyncConfig, RuntimeConfig, MonitorConfig, EditorConfig, AiConfig
@@ -41,13 +42,11 @@ from .venv import ensure_venv, ensure_node_deps
 from .server import run_server
 from .cleanup import cleanup_project, find_free_port
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
+# Logger - configured in main() based on verbose flag
 logger = logging.getLogger("mrmd")
+
+# Global verbose flag for output handler
+_verbose_mode = False
 
 
 def parse_args():
@@ -200,10 +199,20 @@ The orchestrator starts:
 
     # Misc
     parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Show detailed output from all services",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Don't automatically open browser",
+    )
+    parser.add_argument(
         "--log-level",
         choices=["debug", "info", "warning", "error"],
-        default="info",
-        help="Log level (default: info)",
+        default=None,  # Default based on verbose
+        help="Log level (default: warning, or info with --verbose)",
     )
     parser.add_argument(
         "--no-cleanup",
@@ -322,6 +331,26 @@ def build_config(args, project_root: Path, venv_path: Path = None) -> Orchestrat
 
 async def async_main(args):
     """Async main entry point."""
+    global _verbose_mode
+    _verbose_mode = args.verbose
+
+    # Configure logging based on verbose flag
+    log_level = args.log_level
+    if log_level is None:
+        log_level = "info" if args.verbose else "warning"
+
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper()),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+        force=True,
+    )
+
+    # Also suppress uvicorn logs in non-verbose mode
+    if not args.verbose:
+        logging.getLogger("uvicorn").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
     # Resolve target to project root and optional file
     cwd = Path.cwd()
@@ -373,6 +402,11 @@ async def async_main(args):
 
     # Create orchestrator
     orchestrator = Orchestrator(config)
+
+    # In non-verbose mode, suppress subprocess output
+    if not args.verbose:
+        # Silent handler - output is still captured in process info
+        orchestrator.processes.set_output_handler(lambda name, line: None)
 
     # Set project root and venv
     orchestrator._project_root = project_root
@@ -431,30 +465,50 @@ async def async_main(args):
         urls = orchestrator.get_urls()
         sessions = orchestrator.get_sessions()
         juice_names = ["Quick", "Balanced", "Deep", "Maximum", "Ultimate"]
+        editor_url = f"http://localhost:{config.editor.port}"
 
-        print()
-        print(f"\033[36m  mrmd - {project_root.name}\033[0m")
-        print("  " + "─" * 40)
-        print(f"  Project:  {project_root}")
-        print(f"  Editor:   http://localhost:{config.editor.port}")
-        print(f"  Sync:     {urls['sync']}")
-        print(f"  Runtime:  {urls['runtimes'].get('python', 'not running')}")
-        if orchestrator.project_venv:
-            print(f"  Venv:     {orchestrator.project_venv}")
-        if urls.get('ai'):
-            print(f"  AI:       {urls['ai']} (juice={juice_names[config.ai.default_juice_level]})")
-        print(f"  Document: {initial_doc}")
-        print()
-
-        # Show active sessions
-        if sessions:
-            print("  \033[36mActive Sessions:\033[0m")
-            for doc, session in sessions.items():
-                runtime_info = "dedicated" if session.dedicated_runtime else "shared"
-                port_info = f" (port {session.runtime_port})" if session.runtime_port else ""
-                venv_info = f", venv" if session.venv else ""
-                print(f"    {doc}: python={runtime_info}{port_info}{venv_info}")
+        if args.verbose:
+            # Detailed output
             print()
+            print(f"\033[36m  mrmd - {project_root.name}\033[0m")
+            print("  " + "─" * 40)
+            print(f"  Project:  {project_root}")
+            print(f"  Editor:   {editor_url}")
+            print(f"  Sync:     {urls['sync']}")
+            print(f"  Runtime:  {urls['runtimes'].get('python', 'not running')}")
+            if orchestrator.project_venv:
+                print(f"  Venv:     {orchestrator.project_venv}")
+            if urls.get('ai'):
+                print(f"  AI:       {urls['ai']} (juice={juice_names[config.ai.default_juice_level]})")
+            print(f"  Document: {initial_doc}")
+            print()
+
+            # Show active sessions
+            if sessions:
+                print("  \033[36mActive Sessions:\033[0m")
+                for doc, session in sessions.items():
+                    runtime_info = "dedicated" if session.dedicated_runtime else "shared"
+                    port_info = f" (port {session.runtime_port})" if session.runtime_port else ""
+                    venv_info = f", venv" if session.venv else ""
+                    print(f"    {doc}: python={runtime_info}{port_info}{venv_info}")
+                print()
+        else:
+            # Clean minimal output
+            print()
+            print(f"\033[36m  ┌─ mrmd ─────────────────────────────────┐\033[0m")
+            print(f"\033[36m  │\033[0m                                         \033[36m│\033[0m")
+            print(f"\033[36m  │\033[0m  \033[1m{project_root.name}\033[0m/{initial_doc}.md")
+            print(f"\033[36m  │\033[0m                                         \033[36m│\033[0m")
+            print(f"\033[36m  │\033[0m  \033[4m{editor_url}\033[0m")
+            print(f"\033[36m  │\033[0m                                         \033[36m│\033[0m")
+            print(f"\033[36m  │\033[0m  \033[2mPress Ctrl+C to stop\033[0m                   \033[36m│\033[0m")
+            print(f"\033[36m  │\033[0m                                         \033[36m│\033[0m")
+            print(f"\033[36m  └─────────────────────────────────────────┘\033[0m")
+            print()
+
+        # Auto-open browser (unless disabled)
+        if not args.no_browser:
+            webbrowser.open(editor_url)
 
         # Run server (blocks until shutdown)
         server_task = asyncio.create_task(
