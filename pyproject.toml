@@ -1,6 +1,6 @@
 [project]
 name = "mrmd"
-version = "0.9.22"
+version = "0.10.0"
 description = "Collaborative markdown notebooks - edit and run code together"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -63,8 +63,8 @@ all = [
 mrmd = "mrmd.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/anthropics/mrmd-packages"
-Repository = "https://github.com/anthropics/mrmd-packages"
+Homepage = "https://github.com/maximerivest/mrmd-packages"
+Repository = "https://github.com/maximerivest/mrmd-packages"
 
 [build-system]
 requires = ["hatchling"]

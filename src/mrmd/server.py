@@ -1103,36 +1103,18 @@ def mount_editor(app: FastAPI, editor_path: Path, orchestrator: "Orchestrator" =
             height: 100%;
             background: #1e1e1e;
         }}
-        /* Main container - full viewport with flex layout */
+        /* Main container fills viewport */
         #editor {{
-            display: flex;
-            flex-direction: column;
             height: 100vh;
         }}
-        /* Studio wrapper - flex grow */
-        #editor .mrmd-studio {{
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }}
-        /* Editor area - centered content */
-        #editor .mrmd-studio__editor {{
-            flex: 1;
-            overflow: auto;
-            display: flex;
-            justify-content: center;
-        }}
-        /* The actual CodeMirror container - centered with max-width */
-        #editor .mrmd-studio__editor > .cm-editor {{
-            width: 100%;
+        /* Center the CodeMirror content with max-width */
+        #editor .cm-editor {{
             max-width: 900px;
-            padding: 3rem 2rem 2rem 2rem;
-            background: transparent;
+            margin: 0 auto;
+            padding-top: 2rem;
         }}
-        /* Status bar - full width at bottom */
-        #editor .mrmd-studio__statusbar {{
-            flex-shrink: 0;
+        #editor .cm-scroller {{
+            padding: 0 2rem;
         }}
     </style>
 </head>
@@ -1190,36 +1172,18 @@ def mount_editor(app: FastAPI, editor_path: Path, orchestrator: "Orchestrator" =
             height: 100%;
             background: #1e1e1e;
         }}
-        /* Main container - full viewport with flex layout */
+        /* Main container fills viewport */
         #editor {{
-            display: flex;
-            flex-direction: column;
             height: 100vh;
         }}
-        /* Studio wrapper - flex grow */
-        #editor .mrmd-studio {{
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }}
-        /* Editor area - centered content */
-        #editor .mrmd-studio__editor {{
-            flex: 1;
-            overflow: auto;
-            display: flex;
-            justify-content: center;
-        }}
-        /* The actual CodeMirror container - centered with max-width */
-        #editor .mrmd-studio__editor > .cm-editor {{
-            width: 100%;
+        /* Center the CodeMirror content with max-width */
+        #editor .cm-editor {{
             max-width: 900px;
-            padding: 3rem 2rem 2rem 2rem;
-            background: transparent;
+            margin: 0 auto;
+            padding-top: 2rem;
         }}
-        /* Status bar - full width at bottom */
-        #editor .mrmd-studio__statusbar {{
-            flex-shrink: 0;
+        #editor .cm-scroller {{
+            padding: 0 2rem;
         }}
     </style>
 </head>
