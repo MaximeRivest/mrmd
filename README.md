@@ -795,6 +795,133 @@ await exporter.toUvScript('/project/analysis.md');
 
 ---
 
+## ComputeTargets
+
+Manage where runtimes run — local machine, remote servers, cloud (markco.dev). Makes `RuntimeService` network-transparent.
+
+```js
+import { ComputeTargets } from 'mrmd-core';
+
+const targets = new ComputeTargets({ settings });
+```
+
+### Targets
+
+A compute target is any machine that can run runtimes. The local machine is always a target.
+
+#### `targets.list() → Target[]`
+
+```js
+targets.list();
+// → [
+//   { id: 'local', type: 'local', label: 'This Computer', status: 'online' },
+//   { id: 'gpu-server', type: 'ssh', label: 'Lab GPU Server', host: 'gpu.lab.uni.edu', status: 'online' },
+//   { id: 'markco:abc123', type: 'cloud', label: 'markco.dev', status: 'online' },
+// ]
+```
+
+#### `targets.add(config) → Target`
+
+```js
+// SSH target
+targets.add({
+  type: 'ssh',
+  label: 'Lab GPU Server',
+  host: 'gpu.lab.uni.edu',
+  user: 'maxime',
+  // auth via SSH agent/keys — no passwords stored
+});
+
+// Cloud target (markco.dev)
+targets.add({
+  type: 'cloud',
+  label: 'markco.dev',
+  provider: 'markco',
+  apiKey: 'mk_...',   // or reference settings: 'settings:apiKeys.markco'
+});
+
+// Direct HTTP target (already running mrmd-server somewhere)
+targets.add({
+  type: 'http',
+  label: 'My VPS',
+  url: 'https://my-server.com:8080',
+  token: 'abc123',
+});
+```
+
+#### `targets.remove(id) → void`
+#### `targets.ping(id) → Promise<{ online, latency, runtimes }>`
+
+Check if a target is reachable and what's running on it.
+
+```js
+await targets.ping('gpu-server');
+// → { online: true, latency: 45, runtimes: ['python:default'] }
+```
+
+### Remote runtimes
+
+`RuntimeService` accepts a `target` field. When set, it delegates to the remote machine instead of spawning locally.
+
+```js
+// Start a runtime on the GPU server
+const rt = await runtimes.start({
+  name: 'gpu-analysis',
+  language: 'python',
+  cwd: '/data/project',       // path on the remote machine
+  target: 'gpu-server',
+  env: { CUDA_VISIBLE_DEVICES: '0,1' },
+});
+// → { name, pid, port, url: 'http://localhost:54321/mrp/v1', target: 'gpu-server', tunnel: true, ... }
+//   (url is a local tunnel endpoint — transparent to the caller)
+```
+
+The returned `url` is always a local endpoint. If the target is remote, mrmd-core sets up a tunnel (SSH port forward, WebSocket relay, etc.) so the caller doesn't need to know the difference.
+
+```js
+// List all runtimes across all targets
+runtimes.list();
+// → [
+//   { name: 'local-py', language: 'python', target: 'local', ... },
+//   { name: 'gpu-analysis', language: 'python', target: 'gpu-server', ... },
+//   { name: 'cloud-r', language: 'r', target: 'markco:abc123', ... },
+// ]
+
+// Stop a remote runtime
+await runtimes.stop('gpu-analysis');
+```
+
+### How it works
+
+| Target type | Start | Tunnel | Stop |
+|-------------|-------|--------|------|
+| `local` | Spawn process directly | N/A | Kill process |
+| `ssh` | SSH exec: `mrmd-cli runtime start ...` on remote | SSH port forward (`-L`) | SSH exec: `mrmd-cli runtime stop ...` |
+| `http` | POST to remote `mrmd-server` API | WebSocket relay or direct | POST to remote API |
+| `cloud` | markco.dev API (provisions container) | Via markco relay | markco.dev API |
+
+**SSH targets require `mrmd-cli` installed on the remote machine.** This is why `mrmd-cli` matters — it's the headless interface that remote targets use. A remote machine doesn't need Electron or a browser, just `mrmd-cli`.
+
+### Preferences integration
+
+`Preferences.resolve()` already has a `targetId` field. When scope is resolved, it determines both which runtime name to use and where to run it.
+
+```js
+// Configure a project to run Python on the GPU server
+prefs.setProjectOverride('/project', 'python', {
+  target: 'gpu-server',
+  environment: '/data/envs/ml-venv',
+});
+
+// Now resolve + start automatically goes remote
+const config = await prefs.resolve('/project/analysis.md', 'python');
+// → { ..., target: 'gpu-server', ... }
+const rt = await runtimes.start(config);
+// → tunneled connection to GPU server
+```
+
+---
+
 ## SettingsService
 
 User settings shared across all heads. Stored in `<CONFIG_DIR>/settings.json`.
