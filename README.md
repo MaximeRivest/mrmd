@@ -30,7 +30,14 @@ npm install mrmd-core
 | `FileService` | Create, read, write, move, delete files with automatic link refactoring |
 | `AssetService` | Manage `_assets/` directory, hash-based dedup, orphan detection |
 | `RecentService` | Track recently opened files and projects across all heads |
-| `EnvironmentService` | Discover interpreters, environments, and languages available on this machine |
+| `EnvironmentService` | Discover, provision, and install interpreters, environments, and languages |
+| `PackageService` | Install, list, and check packages within runtime environments |
+| `DocumentModel` | Parse a markdown file into structured cells, outputs, and frontmatter |
+| `Runner` | Execute a notebook headlessly — all cells or a subset |
+| `Exporter` | Convert notebooks to HTML, PDF, Python script, UV script |
+| `SearchService` | Full-text search across project documents |
+| `SettingsService` | User settings (API keys, editor prefs) shared across all heads |
+| `HealthService` | Diagnose the setup — what's installed, what's broken, what's missing |
 
 All pure Node.js. No Electron. No browser APIs. No Express.
 
@@ -597,6 +604,296 @@ Most recent files, newest first. Default limit: 50.
 Most recent project roots, newest first. Default limit: 20.
 
 #### `recent.clear() → void`
+
+---
+
+## PackageService
+
+Manages packages within runtime environments. The "I imported pandas but it's not installed" problem — detect it, offer to fix it, fix it.
+
+```js
+import { PackageService } from 'mrmd-core';
+
+const packages = new PackageService();
+```
+
+#### `packages.list(language, environmentPath) → Promise<Package[]>`
+
+List installed packages in an environment.
+
+```js
+await packages.list('python', '/project/.venv');
+// → [
+//   { name: 'pandas', version: '2.1.4' },
+//   { name: 'numpy', version: '1.26.2' },
+//   ...
+// ]
+```
+
+#### `packages.install(language, environmentPath, packageNames) → Promise<InstallResult>`
+
+Install packages into an environment.
+
+```js
+await packages.install('python', '/project/.venv', ['pandas', 'matplotlib']);
+// → { installed: ['pandas==2.1.4', 'matplotlib==3.8.2'], failed: [] }
+
+await packages.install('r', null, ['ggplot2', 'dplyr']);
+// → { installed: ['ggplot2', 'dplyr'], failed: [] }
+```
+
+#### `packages.check(language, environmentPath, packageNames) → Promise<CheckResult>`
+
+Check which packages are installed and which are missing.
+
+```js
+await packages.check('python', '/project/.venv', ['pandas', 'scipy', 'torch']);
+// → { installed: ['pandas'], missing: ['scipy', 'torch'] }
+```
+
+#### `packages.detectMissing(language, environmentPath, code) → Promise<string[]>`
+
+Analyze code for imports and report which packages aren't installed. Enables "auto-install missing packages" flows.
+
+```js
+await packages.detectMissing('python', '/project/.venv', 'import pandas as pd\nimport scipy.stats');
+// → ['scipy']
+```
+
+---
+
+## DocumentModel
+
+Parse a markdown file into structured cells, outputs, and frontmatter. This is the shared understanding of what a notebook looks like — every head and the runner depend on it.
+
+```js
+import { DocumentModel } from 'mrmd-core';
+```
+
+#### `DocumentModel.parse(content) → Document`
+
+```js
+const doc = DocumentModel.parse(fs.readFileSync('analysis.md', 'utf8'));
+// → {
+//   frontmatter: { title: 'Analysis', ... },
+//   cells: [
+//     { type: 'markdown', content: '# Analysis\n\nSome text...', startLine: 4, endLine: 8 },
+//     { type: 'code', language: 'python', content: 'import pandas as pd\ndf = pd.read_csv("data.csv")', startLine: 9, endLine: 12 },
+//     { type: 'output', content: '   col1  col2\n0     1     2', startLine: 13, endLine: 16 },
+//     { type: 'code', language: 'python', content: 'df.describe()', startLine: 17, endLine: 19 },
+//     ...
+//   ],
+// }
+```
+
+#### `DocumentModel.serialize(document) → string`
+
+Convert a Document back to markdown. Round-trips cleanly.
+
+#### `DocumentModel.languages(document) → string[]`
+
+Which languages appear in code cells.
+
+```js
+DocumentModel.languages(doc);
+// → ['python', 'r']
+```
+
+#### `DocumentModel.codeCells(document, language?) → CodeCell[]`
+
+Extract just the code cells, optionally filtered by language.
+
+---
+
+## Runner
+
+Execute a notebook headlessly. For CLI (`mrmd run analysis.md`), CI pipelines, batch processing, testing.
+
+```js
+import { Runner } from 'mrmd-core';
+
+const runner = new Runner({ runtimes, preferences, projects });
+```
+
+#### `runner.run(filePath, options?) → Promise<RunResult>`
+
+Run all code cells in a notebook in order.
+
+```js
+const result = await runner.run('/project/analysis.md');
+// → {
+//   file: '/project/analysis.md',
+//   cells: [
+//     { index: 0, language: 'python', status: 'ok', duration: 234, output: '...' },
+//     { index: 1, language: 'python', status: 'ok', duration: 1200, output: '...' },
+//     { index: 2, language: 'python', status: 'error', duration: 50, error: { type: 'NameError', ... } },
+//   ],
+//   status: 'error',      // 'ok' if all cells pass
+//   duration: 1484,
+// }
+```
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `languages` | Only run cells in these languages |
+| `cells` | Only run specific cell indices |
+| `stopOnError` | Stop at first error (default: true) |
+| `updateFile` | Write outputs back to the file (default: false) |
+| `onCell` | Callback per cell: `(cell, result) => void` |
+| `timeout` | Per-cell timeout in ms |
+
+```js
+// Run and update the file with fresh outputs
+await runner.run('/project/analysis.md', { updateFile: true });
+
+// Run only Python cells, don't stop on error
+await runner.run('/project/analysis.md', { languages: ['python'], stopOnError: false });
+
+// CI mode — just check if everything passes
+const result = await runner.run('/project/analysis.md');
+process.exit(result.status === 'ok' ? 0 : 1);
+```
+
+---
+
+## Exporter
+
+Convert notebooks to other formats.
+
+```js
+import { Exporter } from 'mrmd-core';
+
+const exporter = new Exporter();
+```
+
+#### `exporter.toHtml(filePath, options?) → Promise<string>`
+
+Render notebook to standalone HTML with syntax highlighting and output rendering.
+
+#### `exporter.toPdf(filePath, options?) → Promise<Buffer>`
+
+Render to PDF (requires a headless browser or weasyprint — configurable).
+
+#### `exporter.toScript(filePath, language) → Promise<string>`
+
+Extract code cells into a plain script.
+
+```js
+await exporter.toScript('/project/analysis.md', 'python');
+// → "import pandas as pd\ndf = pd.read_csv('data.csv')\n\ndf.describe()\n..."
+```
+
+#### `exporter.toUvScript(filePath) → Promise<string>`
+
+Export to a [UV inline script](https://docs.astral.sh/uv/guides/scripts/) with dependency metadata.
+
+```js
+await exporter.toUvScript('/project/analysis.md');
+// → "#!/usr/bin/env -S uv run\n# /// script\n# requires-python = \">=3.12\"\n# dependencies = [\n#   \"pandas>=2.1\",\n# ]\n# ///\n\nimport pandas as pd\n..."
+```
+
+---
+
+## SearchService
+
+Full-text search across project documents.
+
+```js
+import { SearchService } from 'mrmd-core';
+
+const search = new SearchService();
+```
+
+#### `search.query(projectRoot, query, options?) → Promise<SearchResult[]>`
+
+```js
+await search.query('/project', 'rolling_mean');
+// → [
+//   { file: 'analysis.md', line: 45, column: 12, context: 'df["rolling_mean"] = df.price.rolling(7).mean()', type: 'code' },
+//   { file: 'methods.md', line: 12, column: 0, context: 'We compute a rolling_mean over 7 days...', type: 'prose' },
+// ]
+```
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `fileGlob` | Filter files (e.g. `'*.md'`) |
+| `cellType` | Search only in `'code'`, `'prose'`, or `'output'` cells |
+| `language` | Search only in code cells of this language |
+| `maxResults` | Limit results |
+| `regex` | Treat query as regex |
+
+---
+
+## SettingsService
+
+User settings shared across all heads. Stored in `<CONFIG_DIR>/settings.json`.
+
+```js
+import { SettingsService } from 'mrmd-core';
+
+const settings = new SettingsService();
+```
+
+#### `settings.get(key, fallback?) → any`
+
+```js
+settings.get('apiKeys.openai');
+// → 'sk-...'
+
+settings.get('editor.fontSize', 14);
+// → 14
+```
+
+#### `settings.set(key, value) → void`
+
+```js
+settings.set('apiKeys.anthropic', 'sk-ant-...');
+```
+
+#### `settings.all() → object`
+
+Full settings object.
+
+#### `settings.reset(key?) → void`
+
+Reset to defaults. If key given, reset just that key.
+
+---
+
+## HealthService
+
+Diagnose the setup. "Is everything working? What's missing? What's broken?" One call for heads to surface setup issues, or for `mrmd doctor` in the CLI.
+
+```js
+import { HealthService } from 'mrmd-core';
+
+const health = new HealthService({ env, runtimes, settings });
+```
+
+#### `health.check() → Promise<HealthReport>`
+
+```js
+await health.check();
+// → {
+//   status: 'warn',     // 'ok', 'warn', 'error'
+//   checks: [
+//     { name: 'config-dir',    status: 'ok',    message: '~/.config/mrmd exists' },
+//     { name: 'python',        status: 'ok',    message: 'Python 3.12.1 via uv' },
+//     { name: 'r',             status: 'warn',  message: 'R not installed', fix: 'Run: mrmd install r' },
+//     { name: 'julia',         status: 'warn',  message: 'Julia not installed', fix: 'Run: mrmd install julia' },
+//     { name: 'uv',            status: 'ok',    message: 'uv 0.5.1' },
+//     { name: 'mrmd-python',   status: 'ok',    message: '0.3.8 in /project/.venv' },
+//     { name: 'api-keys',      status: 'warn',  message: 'No API keys configured', fix: 'Run: mrmd settings set apiKeys.anthropic <key>' },
+//     { name: 'runtimes',      status: 'ok',    message: '2 runtimes running' },
+//   ],
+// }
+```
+
+Every check includes a `fix` hint when actionable — heads can display it as-is (CLI) or wire it to a button (Electron/vscode).
 
 ---
 
