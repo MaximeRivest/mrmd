@@ -511,6 +511,61 @@ await env.checkRuntime('python', '/path/to/project/.venv');
 // → { installed: true, version: '0.3.8' }
 ```
 
+### Language installation
+
+For beginners who don't have a language installed yet. Heads can surface this as a guided setup flow — "R is not installed. Install it?" — instead of a dead end.
+
+#### `env.installable() → InstallableLanguage[]`
+
+List languages that can be automatically installed on this platform.
+
+```js
+await env.installable();
+// → [
+//   { language: 'python', method: 'uv', description: 'Python via uv (recommended)' },
+//   { language: 'python', method: 'system', description: 'Python via system package manager' },
+//   { language: 'r', method: 'system', description: 'R via apt/brew/winget' },
+//   { language: 'julia', method: 'juliaup', description: 'Julia via juliaup' },
+//   { language: 'node', method: 'system', description: 'Node.js via system package manager' },
+//   { language: 'ruby', method: 'system', description: 'Ruby via system package manager' },
+// ]
+```
+
+#### `env.install(language, options?) → Promise<InstallResult>`
+
+Install a language on this machine. Uses the best available method per platform.
+
+```js
+await env.install('python');
+// → { success: true, interpreter: '/home/user/.local/bin/python3', version: '3.12.1', method: 'uv' }
+
+await env.install('r');
+// → { success: true, interpreter: '/usr/bin/Rscript', version: '4.4.1', method: 'apt' }
+
+await env.install('julia');
+// → { success: true, interpreter: '/home/user/.juliaup/bin/julia', version: '1.11.0', method: 'juliaup' }
+```
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `method` | Override install method (e.g. `'uv'`, `'brew'`, `'apt'`, `'winget'`, `'juliaup'`) |
+| `version` | Request specific version (e.g. `'3.12'`, `'4.4'`) |
+| `onProgress` | Callback for progress updates: `(message: string) => void` |
+
+**Install strategies per platform:**
+
+| Language | Linux | macOS | Windows |
+|----------|-------|-------|---------|
+| Python | uv (preferred), apt/dnf | uv (preferred), brew | uv (preferred), winget, python.org |
+| R | apt/dnf | brew, CRAN .pkg | winget, CRAN .exe |
+| Julia | juliaup | juliaup | juliaup |
+| Node | apt/dnf, nvm | brew, nvm | winget, nvm-windows |
+| Ruby | apt/dnf | brew, system | winget, RubyInstaller |
+
+The service handles platform detection, picks the best method, and reports progress. Heads wrap this in their own UX (progress bar, confirmation dialog, terminal output, etc.).
+
 ---
 
 ## RecentService
