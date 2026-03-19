@@ -30,6 +30,7 @@ npm install mrmd-core
 | `FileService` | Create, read, write, move, delete files with automatic link refactoring |
 | `AssetService` | Manage `_assets/` directory, hash-based dedup, orphan detection |
 | `RecentService` | Track recently opened files and projects across all heads |
+| `EnvironmentService` | Discover interpreters, environments, and languages available on this machine |
 
 All pure Node.js. No Electron. No browser APIs. No Express.
 
@@ -416,6 +417,99 @@ Save with hash-based deduplication. Returns asset path.
 #### `assets.list(projectRoot) → Promise<AssetEntry[]>`
 #### `assets.delete(projectRoot, assetPath) → Promise<void>`
 #### `assets.findOrphans(projectRoot) → Promise<string[]>`
+
+---
+
+## EnvironmentService
+
+Discovers what's available on this machine — interpreters, package environments, language runtimes. This is what powers "choose your Python" or "pick a venv" in any head.
+
+```js
+import { EnvironmentService } from 'mrmd-core';
+
+const env = new EnvironmentService();
+```
+
+#### `env.discover(language?) → Promise<Discovery>`
+
+Scan the system for available interpreters and environments. Optional language filter.
+
+```js
+const all = await env.discover();
+// → {
+//   python: {
+//     interpreters: [
+//       { path: '/usr/bin/python3.11', version: '3.11.4', source: 'system' },
+//       { path: '/usr/bin/python3.12', version: '3.12.1', source: 'system' },
+//       { path: '/home/user/.local/bin/python3', version: '3.12.1', source: 'uv' },
+//     ],
+//     environments: [
+//       { path: '/project/.venv', interpreter: '/project/.venv/bin/python', version: '3.12.1', hasMrmdRuntime: true },
+//       { path: '/other/.venv', interpreter: '/other/.venv/bin/python', version: '3.11.4', hasMrmdRuntime: false },
+//     ],
+//   },
+//   r: {
+//     interpreters: [
+//       { path: '/usr/bin/Rscript', version: '4.3.2', source: 'system' },
+//     ],
+//     environments: [],
+//   },
+//   julia: {
+//     interpreters: [
+//       { path: '/usr/local/bin/julia', version: '1.10.0', source: 'system' },
+//     ],
+//     environments: [
+//       { path: '/project', hasProjectToml: true },
+//     ],
+//   },
+//   bash: {
+//     interpreters: [
+//       { path: '/bin/bash', version: '5.2.15', source: 'system' },
+//     ],
+//     environments: [],
+//   },
+// }
+
+const pythonOnly = await env.discover('python');
+```
+
+#### `env.discoverForProject(projectRoot, language?) → Promise<Discovery>`
+
+Same as `discover()` but also scans the project directory for local environments (`.venv`, `renv`, `Project.toml`, `node_modules`, etc.).
+
+```js
+const d = await env.discoverForProject('/path/to/project', 'python');
+// → finds /path/to/project/.venv, conda envs, etc.
+```
+
+#### `env.provision(language, projectRoot, options?) → Promise<EnvironmentInfo>`
+
+Create a new environment for a language in a project. For Python this creates a venv and installs `mrmd-python`. For Julia this instantiates the project. Idempotent — skips if already set up.
+
+```js
+const venv = await env.provision('python', '/path/to/project');
+// → { path: '/path/to/project/.venv', interpreter: '...', version: '3.12.1', hasMrmdRuntime: true }
+
+const julia = await env.provision('julia', '/path/to/project');
+// → { path: '/path/to/project', hasProjectToml: true }
+```
+
+#### `env.installRuntime(language, environmentPath) → Promise<void>`
+
+Install the mrmd runtime bridge (`mrmd-python`, R packages, etc.) into an existing environment.
+
+```js
+await env.installRuntime('python', '/path/to/project/.venv');
+```
+
+#### `env.checkRuntime(language, environmentPath) → Promise<{ installed, version? }>`
+
+Check if the mrmd runtime bridge is installed in an environment.
+
+```js
+await env.checkRuntime('python', '/path/to/project/.venv');
+// → { installed: true, version: '0.3.8' }
+```
 
 ---
 
