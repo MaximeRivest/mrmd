@@ -37,6 +37,7 @@ npm install mrmd-core
 | `Exporter` | Convert notebooks to HTML, PDF, Python script, UV script |
 | `SettingsService` | User settings (API keys, editor prefs) shared across all heads |
 | `HealthService` | Diagnose the setup — what's installed, what's broken, what's missing |
+| `Daemon` | Long-running background service: runtime management, heartbeat, tunnels, event bus |
 
 All pure Node.js. No Electron. No browser APIs. No Express.
 
@@ -1136,6 +1137,145 @@ Every check includes a `fix` hint when actionable — heads can display it as-is
 
 ---
 
+## Daemon
+
+Long-running background service. This is the always-on process that keeps mrmd alive even when no editor is open. Manages runtimes, maintains registry heartbeat, holds tunnels open, and emits events that any head can subscribe to.
+
+```js
+import { Daemon } from 'mrmd-core';
+
+const daemon = new Daemon();
+await daemon.start();
+```
+
+### Why a daemon?
+
+Without it, runtimes die when you close your editor. With it:
+- Runtimes **survive** editor restarts (GPU model stays loaded)
+- Registry heartbeat keeps running (remote machines stay discoverable)
+- Tunnels stay open (remote runtimes remain reachable)
+- Notifications work even with no editor open (execution finished, runtime crashed)
+- Multiple heads can connect to the same daemon simultaneously
+
+### Lifecycle
+
+#### `daemon.start(options?) → Promise<void>`
+
+Start the daemon. Binds a local socket/port for heads to connect to.
+
+```js
+await daemon.start({
+  socket: '/tmp/mrmd-daemon.sock',  // Unix socket (default)
+  // or port: 19876                 // TCP for cross-machine
+});
+```
+
+#### `daemon.stop() → Promise<void>`
+
+Graceful shutdown. Optionally stops all runtimes or leaves them running (configurable).
+
+#### `daemon.status() → DaemonStatus`
+
+```js
+daemon.status();
+// → {
+//   pid: 12345,
+//   uptime: 86400,
+//   runtimes: 3,
+//   registryConnected: true,
+//   tunnels: 1,
+//   heads: ['mrmd-electron', 'mrmd-vscode'],   // connected clients
+// }
+```
+
+### Event bus
+
+The daemon emits events that any connected head can subscribe to. This powers notifications, status indicators, and live updates across all open editors.
+
+#### `daemon.on(event, callback)`
+
+```js
+daemon.on('runtime:started',  (rt) => { /* runtime came up */ });
+daemon.on('runtime:stopped',  (rt) => { /* runtime went down */ });
+daemon.on('runtime:crashed',  (rt) => { /* unexpected exit */ });
+daemon.on('runtime:output',   (rt, data) => { /* stdout/stderr from execution */ });
+daemon.on('execution:done',   (rt, result) => { /* cell finished */ });
+daemon.on('target:online',    (target) => { /* remote machine came online */ });
+daemon.on('target:offline',   (target) => { /* remote machine went offline */ });
+daemon.on('package:missing',  (rt, pkg) => { /* import failed, package not installed */ });
+daemon.on('health:warning',   (check) => { /* something needs attention */ });
+```
+
+Heads turn these into their own UX:
+- **Electron tray app** → native OS notifications, badge count, tray menu
+- **VS Code** → status bar updates, notification popups
+- **CLI** → log lines, `mrmd watch` live output
+
+### Head connection
+
+Heads connect to the daemon over the local socket. If no daemon is running, heads can either start one automatically or run in standalone mode (services in-process, no persistence across editor restarts).
+
+```js
+import { connectDaemon } from 'mrmd-core';
+
+// Connect to running daemon (or start one)
+const client = await connectDaemon({ autoStart: true });
+
+// Use services through the daemon (same API as direct use)
+const runtimes = client.runtimes;
+const prefs = client.preferences;
+const rt = await runtimes.start({ ... });
+
+// Subscribe to events
+client.on('runtime:crashed', (rt) => {
+  showNotification(`Runtime ${rt.name} crashed`);
+});
+```
+
+### Process management
+
+| Platform | How the daemon runs |
+|----------|-------------------|
+| Linux | systemd user service (`mrmd daemon` installs it) |
+| macOS | launchd agent (`~/Library/LaunchAgents/dev.mrmd.daemon.plist`) |
+| Windows | Startup task or Windows service |
+
+```bash
+# CLI commands
+mrmd daemon start          # start in background
+mrmd daemon stop           # graceful shutdown
+mrmd daemon status         # show what's running
+mrmd daemon logs           # tail daemon logs
+mrmd daemon install        # install as system service (auto-start on login)
+mrmd daemon uninstall      # remove system service
+```
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     mrmd daemon                          │
+│                                                         │
+│  ┌─────────────┐  ┌──────────┐  ┌───────────────────┐  │
+│  │ RuntimeSvc  │  │ Registry │  │ Event Bus         │  │
+│  │ start/stop  │  │ heartbeat│  │ runtime:started   │  │
+│  │ list/attach │  │ tunnel   │  │ runtime:crashed   │  │
+│  │ consumers   │  │ sync     │  │ execution:done    │  │
+│  └─────────────┘  └──────────┘  └───────────────────┘  │
+│                                                         │
+│  Unix socket: /tmp/mrmd-daemon.sock                     │
+└──────────┬──────────────┬──────────────┬────────────────┘
+           │              │              │
+    ┌──────┴──────┐ ┌─────┴─────┐ ┌─────┴─────┐
+    │  Electron   │ │  VS Code  │ │   CLI     │
+    │  (tray app) │ │ (sidebar) │ │  (watch)  │
+    └─────────────┘ └───────────┘ └───────────┘
+```
+
+The daemon owns the runtimes. Heads are just views. Close all editors — runtimes keep running. Open a new editor — it reconnects and sees everything still there.
+
+---
+
 ## Dependencies
 
 ```
@@ -1148,8 +1288,9 @@ mrmd-core
 
 | Concern | Where |
 |---------|-------|
-| Runtime lifecycle, preferences, project/file/asset ops | **mrmd-core** |
-| Electron IPC, windows, menus, tray | mrmd-electron |
-| HTTP API, auth, WebSocket proxy | mrmd-server |
-| CLI parsing, terminal formatting | mrmd-cli |
+| Runtime lifecycle, preferences, project/file/asset ops, daemon, event bus | **mrmd-core** |
+| System tray icon, native notifications, desktop menus | mrmd-electron |
+| HTTP API, auth, WebSocket proxy for browser clients | mrmd-server |
+| CLI parsing, terminal formatting, server setup, `mrmd daemon` process | mrmd-cli |
+| VS Code sidebar, status bar, notification popups | mrmd-vscode |
 | CodeMirror editor, widgets, themes | mrmd-editor |
