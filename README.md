@@ -902,6 +902,151 @@ await runtimes.stop('gpu-analysis');
 
 **SSH targets require `mrmd-cli` installed on the remote machine.** This is why `mrmd-cli` matters — it's the headless interface that remote targets use. A remote machine doesn't need Electron or a browser, just `mrmd-cli`.
 
+### Registry (markco.dev / mrmd.dev)
+
+A small always-on cloud service that acts as:
+- **Directory** — knows all your compute targets across all machines
+- **Tunnel broker** — relays connections when direct access isn't possible (NAT, firewalls)
+- **Metadata store** — what's installed, what's running, versions, capabilities
+
+Any head on any device can query the registry to see all available compute. No manual IP/port configuration.
+
+#### `targets.login(provider, credentials) → Promise<void>`
+
+Authenticate with the registry.
+
+```js
+await targets.login('markco', { apiKey: 'mk_...' });
+// or
+await targets.login('markco', { email: 'maxime@example.com', password: '...' });
+```
+
+#### `targets.register(options?) → Promise<Target>`
+
+Register the current machine as a compute target. Run this on any server you want to use remotely.
+
+```js
+// On the GPU server:
+await targets.register({
+  label: 'Lab GPU Server',
+  capabilities: await env.discover(),  // auto-detect what's available
+});
+// → registers with markco.dev, starts heartbeat, opens tunnel listener
+```
+
+#### `targets.sync() → Promise<Target[]>`
+
+Pull the latest state from the registry. All your machines, what's running, what's installed.
+
+```js
+await targets.sync();
+// → [
+//   { id: 'local', type: 'local', label: 'MacBook', status: 'online',
+//     languages: ['python', 'r'], runtimes: [] },
+//   { id: 'gpu-server', type: 'registered', label: 'Lab GPU Server', status: 'online',
+//     languages: ['python', 'r', 'julia'], runtimes: ['python:analysis'],
+//     gpu: '2x A100', mem: '256GB' },
+//   { id: 'cloud-1', type: 'cloud', label: 'markco container', status: 'stopped',
+//     languages: ['python', 'r'] },
+// ]
+```
+
+This is what a vscode side panel or Electron runtimes panel calls to populate the "where do you want to run this?" picker.
+
+### Server setup via `mrmd-cli`
+
+On a fresh server, one command to go from zero to registered compute target:
+
+```bash
+# Install mrmd-cli
+npm install -g mrmd-cli
+
+# Set up everything — installs languages, registers with markco.dev
+mrmd setup
+# → Detected: Ubuntu 22.04, 2x A100 GPU, 256GB RAM
+# → Installing Python via uv... done (3.12.1)
+# → Installing R via apt... done (4.4.1)
+# → Installing Julia via juliaup... done (1.11.0)
+# → Creating default environment... done (.venv)
+# → Installing mrmd-python... done
+# →
+# → Register this machine with markco.dev?
+# → Paste your API key (from https://markco.dev/settings/keys): mk_...
+# →
+# → ✓ Registered as "gpu-server" (id: abc123)
+# → ✓ Tunnel active — this machine is now reachable from any mrmd client
+# → ✓ Heartbeat started — status syncs every 30s
+# →
+# → Done. Open mrmd on any device and this server will appear in your compute targets.
+
+# Or step by step:
+mrmd init                           # create config dirs
+mrmd install python                 # install Python
+mrmd install r                      # install R
+mrmd env provision python .         # create .venv, install mrmd-python
+mrmd login                          # authenticate with markco.dev
+mrmd register --label "GPU Server"  # register this machine
+```
+
+After setup, the server runs a lightweight daemon (`mrmd daemon`) that:
+- Maintains a heartbeat with markco.dev
+- Accepts tunneled connections
+- Reports installed languages, running runtimes, system resources
+- Starts/stops runtimes on demand from remote clients
+
+```bash
+# Start the daemon (typically via systemd)
+mrmd daemon
+
+# Check status
+mrmd status
+# → Machine: gpu-server (registered with markco.dev)
+# → Languages: python 3.12.1, r 4.4.1, julia 1.11.0
+# → Runtimes: 1 running (python:analysis on port 41765)
+# → Tunnel: active (via markco.dev relay)
+# → Uptime: 3d 14h
+```
+
+### The full picture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     markco.dev / mrmd.dev                     │
+│                                                              │
+│  Registry: knows all your machines, what's on them           │
+│  Tunnel: relays connections through NAT/firewalls            │
+│  Auth: one account, all your compute                         │
+│                                                              │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │  maxime's targets:                                     │  │
+│  │  ├─ MacBook (local) ............ online, python, r     │  │
+│  │  ├─ Lab GPU Server (ssh/tunnel)  online, python, julia │  │
+│  │  └─ Cloud Container ........... stopped, python        │  │
+│  └────────────────────────────────────────────────────────┘  │
+└──────────────┬──────────────────────────┬────────────────────┘
+               │                          │
+       ┌───────┴───────┐          ┌───────┴───────┐
+       │   MacBook      │          │  GPU Server    │
+       │                │          │                │
+       │  mrmd-electron │          │  mrmd-cli      │
+       │  mrmd-vscode   │          │  mrmd daemon   │
+       │  mrmd-cli      │          │                │
+       │                │          │  python 3.12   │
+       │  "run this on  │  tunnel  │  julia 1.11    │
+       │   GPU server"  ├─────────►│  2x A100       │
+       │                │          │                │
+       └────────────────┘          └────────────────┘
+```
+
+Any head on the MacBook:
+1. Calls `targets.sync()` → gets list from markco.dev
+2. User picks "Lab GPU Server"
+3. Calls `runtimes.start({ ..., target: 'gpu-server' })`
+4. mrmd-core opens tunnel via markco.dev → reaches `mrmd daemon` on server
+5. Daemon starts runtime, returns MRP URL tunneled back
+6. Code executes on GPU server, output streams back
+7. User doesn't think about IPs, ports, SSH keys, NAT
+
 ### Preferences integration
 
 `Preferences.resolve()` already has a `targetId` field. When scope is resolved, it determines both which runtime name to use and where to run it.
