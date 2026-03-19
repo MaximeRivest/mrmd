@@ -1,11 +1,11 @@
 # mrmd-core
 
-Headless service layer for mrmd — runtime lifecycle, project discovery, file operations.
+Headless service layer for mrmd — runtime lifecycle, project discovery, file operations, daemon.
 
 ```
 mrmd-cli        ─┐
 mrmd-electron    │
-mrmd-server      ├── all depend on ── mrmd-core
+mrmd-server      ├── all connect to ── mrmd daemon (mrmd-core)
 mrmd-vscode      │
 ...             ─┘
 ```
@@ -22,8 +22,13 @@ npm install mrmd-core
 
 ## Overview
 
+mrmd-core runs as a **daemon** — a long-lived background process that owns all runtimes, state, and connections. Every head (Electron, VS Code, CLI, browser) connects to the daemon. There is no in-process/standalone mode.
+
+The first head to need mrmd auto-starts the daemon. Closing a head does not stop the daemon. Runtimes survive editor restarts. The daemon is how mrmd works.
+
 | Export | What it does |
 |--------|-------------|
+| `connect()` | Connect to the daemon (auto-starts if needed). Single entry point for all heads. |
 | `RuntimeService` | Start, stop, restart, list runtimes; track which documents use which runtimes |
 | `Preferences` | Runtime configuration: scope, profiles, cwd, compute targets — per project and per notebook |
 | `ProjectService` | Discover projects, scan files, build nav trees |
@@ -37,9 +42,11 @@ npm install mrmd-core
 | `Exporter` | Convert notebooks to HTML, PDF, Python script, UV script |
 | `SettingsService` | User settings (API keys, editor prefs) shared across all heads |
 | `HealthService` | Diagnose the setup — what's installed, what's broken, what's missing |
-| `Daemon` | Long-running background service: runtime management, heartbeat, tunnels, event bus |
+| `ComputeTargets` | Manage where runtimes run — local, remote servers, cloud |
 
 All pure Node.js. No Electron. No browser APIs. No Express.
+
+Everything goes through the daemon. `connect()` returns a client with all services attached.
 
 ---
 
@@ -85,15 +92,217 @@ Heads should call this on first launch. `mrmd-cli` calls it via `mrmd init`.
 
 ---
 
+## Daemon
+
+The daemon is the always-on process that keeps mrmd alive. It owns runtimes, maintains compute target connections, and emits events. Heads connect to it; they don't manage runtimes themselves.
+
+Close your editor — runtimes keep running, GPU memory stays allocated, tunnels stay open. Reopen — reconnect, everything's still there.
+
+```js
+import { Daemon } from 'mrmd-core';
+```
+
+### Starting the daemon
+
+The daemon is a standalone process. `mrmd-cli` runs it:
+
+```bash
+mrmd daemon start          # start in background
+mrmd daemon stop           # graceful shutdown
+mrmd daemon status         # show what's running
+mrmd daemon logs           # tail daemon logs
+mrmd daemon install        # install as system service (auto-start on login)
+mrmd daemon uninstall      # remove system service
+```
+
+Programmatically:
+
+```js
+const daemon = new Daemon();
+await daemon.start({
+  socket: '/tmp/mrmd-daemon.sock',  // Unix socket (default)
+  // or port: 19876                 // TCP for cross-machine
+});
+```
+
+### What the daemon holds
+
+Internally, the daemon instantiates and owns the stateful services:
+
+```js
+// Inside the daemon (simplified):
+this.runtimes    = new RuntimeService();
+this.preferences = new Preferences({ projectService });
+this.targets     = new ComputeTargets({ settings });
+this.settings    = new SettingsService();
+this.recent      = new RecentService();
+this.env         = new EnvironmentService();
+this.packages    = new PackageService();
+this.projects    = new ProjectService();
+```
+
+Heads get proxied access to these over the socket. The proxy implements the same interface — heads call `mrmd.runtimes.start()` and don't know or care about the socket layer.
+
+### Connecting from a head
+
+```js
+import { connect } from 'mrmd-core';
+
+const mrmd = await connect();
+
+// All services are on the client
+mrmd.runtimes       // RuntimeService
+mrmd.preferences    // Preferences
+mrmd.projects       // ProjectService
+mrmd.files          // FileService
+mrmd.assets         // AssetService
+mrmd.recent         // RecentService
+mrmd.env            // EnvironmentService
+mrmd.packages       // PackageService
+mrmd.targets        // ComputeTargets
+mrmd.settings       // SettingsService
+mrmd.health         // HealthService
+mrmd.runner         // Runner
+mrmd.exporter       // Exporter
+
+// Subscribe to events
+mrmd.on('runtime:crashed', (rt) => {
+  showNotification(`Runtime ${rt.name} crashed`);
+});
+
+// Disconnect when the head exits (daemon keeps running)
+mrmd.disconnect();
+```
+
+If no daemon is running, `connect()` starts one automatically. This is always the behavior — there is no "daemon not running" state from the head's perspective.
+
+### Event bus
+
+The daemon emits events that any connected head can subscribe to. This powers notifications, status indicators, and live updates across all open editors.
+
+```js
+client.on('runtime:started',  (rt) => { /* runtime came up */ });
+client.on('runtime:stopped',  (rt) => { /* runtime went down */ });
+client.on('runtime:crashed',  (rt) => { /* unexpected exit */ });
+client.on('runtime:output',   (rt, data) => { /* stdout/stderr from execution */ });
+client.on('execution:done',   (rt, result) => { /* cell finished */ });
+client.on('target:online',    (target) => { /* remote machine came online */ });
+client.on('target:offline',   (target) => { /* remote machine went offline */ });
+client.on('package:missing',  (rt, pkg) => { /* import failed, package not installed */ });
+client.on('health:warning',   (check) => { /* something needs attention */ });
+```
+
+Heads turn these into their own UX:
+- **Electron tray app** → native OS notifications, badge count, tray menu
+- **VS Code** → status bar updates, notification popups
+- **CLI** → log lines, `mrmd watch` live output
+
+### Daemon status
+
+```js
+daemon.status();
+// → {
+//   pid: 12345,
+//   uptime: 86400,
+//   runtimes: 3,
+//   registryConnected: true,
+//   tunnels: 1,
+//   heads: ['mrmd-electron', 'mrmd-vscode'],   // connected clients
+// }
+```
+
+### Shutdown behavior
+
+The daemon **does not stop** when a head disconnects. That's the whole point.
+
+| Action | What happens |
+|--------|-------------|
+| Close an editor | Head disconnects. Daemon stays. Runtimes stay. |
+| Close all editors | Same. Daemon keeps running. |
+| `mrmd daemon stop` | Daemon stops. All runtimes killed. Tunnels closed. |
+| Tray → "Quit mrmd" | Same as `mrmd daemon stop`. |
+| `mrmd daemon stop --keep-runtimes` | Daemon stops but leaves runtime processes alive. Next daemon start reconnects. |
+| Reboot / logout | OS stops daemon. Runtimes killed. |
+
+### Process management
+
+| Platform | How the daemon runs |
+|----------|-------------------|
+| Linux | systemd user service (`mrmd daemon install` sets it up) |
+| macOS | launchd agent (`~/Library/LaunchAgents/dev.mrmd.daemon.plist`) |
+| Windows | Startup task or Windows service |
+
+The first `connect()` call auto-starts the daemon if it's not running. `mrmd daemon install` makes it start on login so it's always ready.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     mrmd daemon                          │
+│                                                         │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │ RuntimeSvc  │  │ ComputeTargets│  │ Event Bus    │  │
+│  │ Preferences │  │ registry      │  │ broadcast to │  │
+│  │ Settings    │  │ heartbeat     │  │ all heads    │  │
+│  │ Recent      │  │ tunnels       │  │              │  │
+│  │ Environment │  │               │  │              │  │
+│  │ Packages    │  │               │  │              │  │
+│  │ Projects    │  │               │  │              │  │
+│  └─────────────┘  └──────────────┘  └───────────────┘  │
+│                                                         │
+│  Unix socket: /tmp/mrmd-daemon.sock                     │
+└──────────┬──────────────┬──────────────┬────────────────┘
+           │              │              │
+    ┌──────┴──────┐ ┌─────┴─────┐ ┌─────┴─────┐
+    │  Electron   │ │  VS Code  │ │   CLI     │
+    │  (tray app) │ │ (sidebar) │ │  (watch)  │
+    └─────────────┘ └───────────┘ └───────────┘
+```
+
+---
+
+## Typical flow
+
+```js
+import { connect } from 'mrmd-core';
+
+// 1. Connect to daemon (auto-starts if needed)
+const mrmd = await connect();
+
+// User opens analysis.md and runs a Python cell:
+
+// 2. Resolve runtime config for this document + language
+const config = await mrmd.preferences.resolve('/project/docs/analysis.md', 'python');
+
+// 3. Start or reuse the runtime (daemon manages the process)
+const rt = await mrmd.runtimes.start(config);
+
+// 4. Register this document as a consumer
+mrmd.runtimes.attach(rt.name, '/project/docs/analysis.md');
+
+// 5. Execute code via MRP
+const result = await fetch(`${rt.url}/execute`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ code: 'import pandas as pd\ndf = pd.read_csv("data.csv")\ndf.head()' }),
+}).then(r => r.json());
+
+// 6. User closes the document — runtime stays alive in the daemon
+mrmd.runtimes.detach(rt.name, '/project/docs/analysis.md');
+
+// 7. Head exits — daemon keeps running
+mrmd.disconnect();
+```
+
+Everything goes through `connect()` — editors, CLI, `mrmd run`, CI. The daemon is always there.
+
+---
+
 ## RuntimeService
 
 Manages runtime processes. A runtime is one process, one PID, one port, one namespace — one REPL, as defined by the [MRP protocol](../spec/mrp-protocol.md).
 
-```js
-import { RuntimeService } from 'mrmd-core';
-
-const runtimes = new RuntimeService();
-```
+Access via `mrmd.runtimes` after `connect()`.
 
 ### Starting a runtime
 
@@ -191,7 +400,7 @@ List running runtimes. Optional language filter.
 
 #### `runtimes.shutdown()`
 
-Stop all runtimes. Call on process exit.
+Stop all runtimes. Called on `mrmd daemon stop`.
 
 ### Document binding
 
@@ -245,11 +454,7 @@ Two documents that resolve to the same name share the same process. For scriptin
 
 Manages runtime configuration. The full resolution chain: **global defaults → project overrides → notebook overrides**.
 
-```js
-import { Preferences } from 'mrmd-core';
-
-const prefs = new Preferences({ projectService });
-```
+Access via `mrmd.preferences` after `connect()`.
 
 ### Resolution
 
@@ -314,42 +519,11 @@ Remove notebook-level overrides, fall back to project/global defaults.
 
 ---
 
-## Typical flow
-
-```js
-import { RuntimeService, Preferences, ProjectService } from 'mrmd-core';
-
-const projects = new ProjectService();
-const prefs = new Preferences({ projectService: projects });
-const runtimes = new RuntimeService();
-
-// User opens analysis.md and runs a Python cell:
-
-// 1. Resolve runtime config for this document + language
-const config = await prefs.resolve('/project/docs/analysis.md', 'python');
-
-// 2. Start or reuse the runtime
-const rt = await runtimes.start(config);
-
-// 3. Register this document as a consumer
-runtimes.attach(rt.name, '/project/docs/analysis.md');
-
-// 4. Execute code via MRP
-const result = await fetch(`${rt.url}/execute`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ code: 'import pandas as pd\ndf = pd.read_csv("data.csv")\ndf.head()' }),
-}).then(r => r.json());
-
-// 5. Later, user closes the document
-runtimes.detach(rt.name, '/project/docs/analysis.md');
-```
-
----
-
 ## ProjectService
 
 Discovers and caches project information. Project root is found by walking up from a file path to the nearest `.git` directory, with a heuristic fallback through parent directories that contain markdown files.
+
+Access via `mrmd.projects` after `connect()`.
 
 ```js
 import { ProjectService } from 'mrmd-core';
@@ -386,7 +560,7 @@ Full file/directory tree for sidebar navigation.
 
 ## FileService
 
-File operations with automatic wiki-link and asset-path refactoring.
+File operations with automatic wiki-link and asset-path refactoring. Access via `mrmd.files` after `connect()`.
 
 ```js
 import { FileService } from 'mrmd-core';
@@ -409,7 +583,7 @@ Moves file and updates all internal links across the project.
 
 ## AssetService
 
-Manage project assets (`_assets/` directory).
+Manage project assets (`_assets/` directory). Access via `mrmd.assets` after `connect()`.
 
 ```js
 import { AssetService } from 'mrmd-core';
@@ -430,6 +604,8 @@ Save with hash-based deduplication. Returns asset path.
 ## EnvironmentService
 
 Discovers what's available on this machine — interpreters, package environments, language runtimes. This is what powers "choose your Python" or "pick a venv" in any head.
+
+Access via `mrmd.env` after `connect()`.
 
 ```js
 import { EnvironmentService } from 'mrmd-core';
@@ -579,7 +755,7 @@ The service handles platform detection, picks the best method, and reports progr
 
 Track recently opened files and projects. Shared across all heads — open a file in Electron, see it in the CLI's recent list.
 
-Stored in `<CONFIG_DIR>/recent.json`.
+Access via `mrmd.recent` after `connect()`. Stored in `<CONFIG_DIR>/recent.json`.
 
 ```js
 import { RecentService } from 'mrmd-core';
@@ -610,6 +786,8 @@ Most recent project roots, newest first. Default limit: 20.
 ## PackageService
 
 Manages packages within runtime environments. The "I imported pandas but it's not installed" problem — detect it, offer to fix it, fix it.
+
+Access via `mrmd.packages` after `connect()`.
 
 ```js
 import { PackageService } from 'mrmd-core';
@@ -666,6 +844,8 @@ await packages.detectMissing('python', '/project/.venv', 'import pandas as pd\ni
 
 Parse a markdown file into structured cells, outputs, and frontmatter. This is the shared understanding of what a notebook looks like — every head and the runner depend on it.
 
+Access via `DocumentModel` import or `mrmd.documents` after `connect()`.
+
 ```js
 import { DocumentModel } from 'mrmd-core';
 ```
@@ -708,6 +888,8 @@ Extract just the code cells, optionally filtered by language.
 ## Runner
 
 Execute a notebook headlessly. For CLI (`mrmd run analysis.md`), CI pipelines, batch processing, testing.
+
+The Runner connects to the daemon like everything else. `mrmd run analysis.md` connects, starts runtimes as needed, executes cells, and disconnects. The daemon keeps runtimes alive unless told to stop them.
 
 ```js
 import { Runner } from 'mrmd-core';
@@ -760,7 +942,7 @@ process.exit(result.status === 'ok' ? 0 : 1);
 
 ## Exporter
 
-Convert notebooks to other formats.
+Convert notebooks to other formats. Access via `mrmd.exporter` after `connect()`.
 
 ```js
 import { Exporter } from 'mrmd-core';
@@ -800,11 +982,7 @@ await exporter.toUvScript('/project/analysis.md');
 
 Manage where runtimes run — local machine, remote servers, cloud (markco.dev). Makes `RuntimeService` network-transparent.
 
-```js
-import { ComputeTargets } from 'mrmd-core';
-
-const targets = new ComputeTargets({ settings });
-```
+Access via `mrmd.targets` after `connect()`. The daemon holds the tunnels and heartbeat. On a remote server, the daemon *is* the compute target — `mrmd daemon` on your laptop and `mrmd daemon` on a GPU server are the same process, just configured differently.
 
 ### Targets
 
@@ -841,7 +1019,7 @@ targets.add({
   apiKey: 'mk_...',   // or reference settings: 'settings:apiKeys.markco'
 });
 
-// Direct HTTP target (already running mrmd-server somewhere)
+// Direct HTTP target (already running mrmd daemon somewhere)
 targets.add({
   type: 'http',
   label: 'My VPS',
@@ -862,7 +1040,7 @@ await targets.ping('gpu-server');
 
 ### Remote runtimes
 
-`RuntimeService` accepts a `target` field. When set, it delegates to the remote machine instead of spawning locally.
+`RuntimeService` accepts a `target` field. When set, the local daemon delegates to the remote daemon instead of spawning locally.
 
 ```js
 // Start a runtime on the GPU server
@@ -877,7 +1055,7 @@ const rt = await runtimes.start({
 //   (url is a local tunnel endpoint — transparent to the caller)
 ```
 
-The returned `url` is always a local endpoint. If the target is remote, mrmd-core sets up a tunnel (SSH port forward, WebSocket relay, etc.) so the caller doesn't need to know the difference.
+The returned `url` is always a local endpoint. If the target is remote, the daemon sets up a tunnel (SSH port forward, WebSocket relay, etc.) so the caller doesn't need to know the difference.
 
 ```js
 // List all runtimes across all targets
@@ -896,17 +1074,17 @@ await runtimes.stop('gpu-analysis');
 
 | Target type | Start | Tunnel | Stop |
 |-------------|-------|--------|------|
-| `local` | Spawn process directly | N/A | Kill process |
-| `ssh` | SSH exec: `mrmd-cli runtime start ...` on remote | SSH port forward (`-L`) | SSH exec: `mrmd-cli runtime stop ...` |
-| `http` | POST to remote `mrmd-server` API | WebSocket relay or direct | POST to remote API |
-| `cloud` | markco.dev API (provisions container) | Via markco relay | markco.dev API |
+| `local` | Daemon spawns process directly | N/A | Daemon kills process |
+| `ssh` | Local daemon → SSH → remote daemon: `start runtime` | SSH port forward (`-L`) | Local daemon → SSH → remote daemon: `stop runtime` |
+| `http` | Local daemon → POST to remote daemon API | WebSocket relay or direct | Local daemon → POST to remote daemon API |
+| `cloud` | markco.dev API (provisions container running daemon) | Via markco relay | markco.dev API |
 
-**SSH targets require `mrmd-cli` installed on the remote machine.** This is why `mrmd-cli` matters — it's the headless interface that remote targets use. A remote machine doesn't need Electron or a browser, just `mrmd-cli`.
+**SSH/HTTP targets require `mrmd daemon` running on the remote machine.** This is why the daemon matters for remote compute — the same daemon that runs locally also runs on servers.
 
 ### Registry (markco.dev / mrmd.dev)
 
 A small always-on cloud service that acts as:
-- **Directory** — knows all your compute targets across all machines
+- **Directory** — knows all your daemons across all machines
 - **Tunnel broker** — relays connections when direct access isn't possible (NAT, firewalls)
 - **Metadata store** — what's installed, what's running, versions, capabilities
 
@@ -924,7 +1102,7 @@ await targets.login('markco', { email: 'maxime@example.com', password: '...' });
 
 #### `targets.register(options?) → Promise<Target>`
 
-Register the current machine as a compute target. Run this on any server you want to use remotely.
+Register this daemon as a compute target. Run this on any server you want to use remotely.
 
 ```js
 // On the GPU server:
@@ -937,7 +1115,7 @@ await targets.register({
 
 #### `targets.sync() → Promise<Target[]>`
 
-Pull the latest state from the registry. All your machines, what's running, what's installed.
+Pull the latest state from the registry. All your daemons, what's running, what's installed.
 
 ```js
 await targets.sync();
@@ -952,7 +1130,7 @@ await targets.sync();
 // ]
 ```
 
-This is what a vscode side panel or Electron runtimes panel calls to populate the "where do you want to run this?" picker.
+This is what a VS Code side panel or Electron runtimes panel calls to populate the "where do you want to run this?" picker.
 
 ### Server setup via `mrmd-cli`
 
@@ -962,7 +1140,7 @@ On a fresh server, one command to go from zero to registered compute target:
 # Install mrmd-cli
 npm install -g mrmd-cli
 
-# Set up everything — installs languages, registers with markco.dev
+# Set up everything — installs languages, starts daemon, registers with markco.dev
 mrmd setup
 # → Detected: Ubuntu 22.04, 2x A100 GPU, 256GB RAM
 # → Installing Python via uv... done (3.12.1)
@@ -974,6 +1152,7 @@ mrmd setup
 # → Register this machine with markco.dev?
 # → Paste your API key (from https://markco.dev/settings/keys): mk_...
 # →
+# → ✓ Daemon started (pid 12345)
 # → ✓ Registered as "gpu-server" (id: abc123)
 # → ✓ Tunnel active — this machine is now reachable from any mrmd client
 # → ✓ Heartbeat started — status syncs every 30s
@@ -985,26 +1164,28 @@ mrmd init                           # create config dirs
 mrmd install python                 # install Python
 mrmd install r                      # install R
 mrmd env provision python .         # create .venv, install mrmd-python
+mrmd daemon start                   # start the daemon
+mrmd daemon install                 # auto-start on boot
 mrmd login                          # authenticate with markco.dev
-mrmd register --label "GPU Server"  # register this machine
+mrmd register --label "GPU Server"  # register this daemon
 ```
 
-After setup, the server runs a lightweight daemon (`mrmd daemon`) that:
+The daemon:
+- Owns all runtimes on this machine
 - Maintains a heartbeat with markco.dev
-- Accepts tunneled connections
+- Accepts tunneled connections from remote heads
 - Reports installed languages, running runtimes, system resources
 - Starts/stops runtimes on demand from remote clients
 
 ```bash
-# Start the daemon (typically via systemd)
-mrmd daemon
-
 # Check status
-mrmd status
+mrmd daemon status
+# → Daemon: running (pid 12345)
 # → Machine: gpu-server (registered with markco.dev)
 # → Languages: python 3.12.1, r 4.4.1, julia 1.11.0
 # → Runtimes: 1 running (python:analysis on port 41765)
 # → Tunnel: active (via markco.dev relay)
+# → Heads: 2 connected (mrmd-electron, mrmd-vscode)
 # → Uptime: 3d 14h
 ```
 
@@ -1014,12 +1195,12 @@ mrmd status
 ┌──────────────────────────────────────────────────────────────┐
 │                     markco.dev / mrmd.dev                     │
 │                                                              │
-│  Registry: knows all your machines, what's on them           │
+│  Registry: knows all your daemons, what's on them            │
 │  Tunnel: relays connections through NAT/firewalls            │
 │  Auth: one account, all your compute                         │
 │                                                              │
 │  ┌────────────────────────────────────────────────────────┐  │
-│  │  maxime's targets:                                     │  │
+│  │  maxime's daemons:                                     │  │
 │  │  ├─ MacBook (local) ............ online, python, r     │  │
 │  │  ├─ Lab GPU Server (ssh/tunnel)  online, python, julia │  │
 │  │  └─ Cloud Container ........... stopped, python        │  │
@@ -1029,28 +1210,31 @@ mrmd status
        ┌───────┴───────┐          ┌───────┴───────┐
        │   MacBook      │          │  GPU Server    │
        │                │          │                │
-       │  mrmd-electron │          │  mrmd-cli      │
-       │  mrmd-vscode   │          │  mrmd daemon   │
-       │  mrmd-cli      │          │                │
-       │                │          │  python 3.12   │
-       │  "run this on  │  tunnel  │  julia 1.11    │
-       │   GPU server"  ├─────────►│  2x A100       │
+       │  mrmd daemon   │          │  mrmd daemon   │
+       │  ├─ runtimes   │          │  ├─ runtimes   │
+       │  ├─ targets    │          │  ├─ targets    │
+       │  └─ events     │          │  └─ events     │
        │                │          │                │
+       │  heads:        │  tunnel  │  python 3.12   │
+       │  ├ Electron    ├─────────►│  julia 1.11    │
+       │  ├ VS Code     │          │  2x A100       │
+       │  └ CLI         │          │                │
        └────────────────┘          └────────────────┘
 ```
 
 Any head on the MacBook:
-1. Calls `targets.sync()` → gets list from markco.dev
-2. User picks "Lab GPU Server"
-3. Calls `runtimes.start({ ..., target: 'gpu-server' })`
-4. mrmd-core opens tunnel via markco.dev → reaches `mrmd daemon` on server
-5. Daemon starts runtime, returns MRP URL tunneled back
-6. Code executes on GPU server, output streams back
-7. User doesn't think about IPs, ports, SSH keys, NAT
+1. Calls `connect()` → connects to local daemon
+2. Calls `client.targets.sync()` → daemon gets list from markco.dev
+3. User picks "Lab GPU Server"
+4. Calls `client.runtimes.start({ ..., target: 'gpu-server' })`
+5. Local daemon opens tunnel via markco.dev → reaches remote daemon
+6. Remote daemon starts runtime, returns MRP URL tunneled back
+7. Code executes on GPU server, output streams back through daemon to head
+8. User doesn't think about IPs, ports, SSH keys, NAT
 
 ### Preferences integration
 
-`Preferences.resolve()` already has a `targetId` field. When scope is resolved, it determines both which runtime name to use and where to run it.
+`Preferences.resolve()` includes a `target` field. When scope is resolved, it determines both which runtime name to use and where to run it.
 
 ```js
 // Configure a project to run Python on the GPU server
@@ -1060,9 +1244,9 @@ prefs.setProjectOverride('/project', 'python', {
 });
 
 // Now resolve + start automatically goes remote
-const config = await prefs.resolve('/project/analysis.md', 'python');
+const config = await client.preferences.resolve('/project/analysis.md', 'python');
 // → { ..., target: 'gpu-server', ... }
-const rt = await runtimes.start(config);
+const rt = await client.runtimes.start(config);
 // → tunneled connection to GPU server
 ```
 
@@ -1071,6 +1255,8 @@ const rt = await runtimes.start(config);
 ## SettingsService
 
 User settings shared across all heads. Stored in `<CONFIG_DIR>/settings.json`.
+
+Access via `mrmd.settings` after `connect()`.
 
 ```js
 import { SettingsService } from 'mrmd-core';
@@ -1121,6 +1307,7 @@ await health.check();
 // → {
 //   status: 'warn',     // 'ok', 'warn', 'error'
 //   checks: [
+//     { name: 'daemon',        status: 'ok',    message: 'Daemon running (pid 12345, uptime 3d)' },
 //     { name: 'config-dir',    status: 'ok',    message: '~/.config/mrmd exists' },
 //     { name: 'python',        status: 'ok',    message: 'Python 3.12.1 via uv' },
 //     { name: 'r',             status: 'warn',  message: 'R not installed', fix: 'Run: mrmd install r' },
@@ -1129,150 +1316,12 @@ await health.check();
 //     { name: 'mrmd-python',   status: 'ok',    message: '0.3.8 in /project/.venv' },
 //     { name: 'api-keys',      status: 'warn',  message: 'No API keys configured', fix: 'Run: mrmd settings set apiKeys.anthropic <key>' },
 //     { name: 'runtimes',      status: 'ok',    message: '2 runtimes running' },
+//     { name: 'registry',      status: 'ok',    message: 'Connected to markco.dev, 2 targets synced' },
 //   ],
 // }
 ```
 
-Every check includes a `fix` hint when actionable — heads can display it as-is (CLI) or wire it to a button (Electron/vscode).
-
----
-
-## Daemon
-
-Long-running background service. This is the always-on process that keeps mrmd alive even when no editor is open. Manages runtimes, maintains registry heartbeat, holds tunnels open, and emits events that any head can subscribe to.
-
-```js
-import { Daemon } from 'mrmd-core';
-
-const daemon = new Daemon();
-await daemon.start();
-```
-
-### Why a daemon?
-
-Without it, runtimes die when you close your editor. With it:
-- Runtimes **survive** editor restarts (GPU model stays loaded)
-- Registry heartbeat keeps running (remote machines stay discoverable)
-- Tunnels stay open (remote runtimes remain reachable)
-- Notifications work even with no editor open (execution finished, runtime crashed)
-- Multiple heads can connect to the same daemon simultaneously
-
-### Lifecycle
-
-#### `daemon.start(options?) → Promise<void>`
-
-Start the daemon. Binds a local socket/port for heads to connect to.
-
-```js
-await daemon.start({
-  socket: '/tmp/mrmd-daemon.sock',  // Unix socket (default)
-  // or port: 19876                 // TCP for cross-machine
-});
-```
-
-#### `daemon.stop() → Promise<void>`
-
-Graceful shutdown. Optionally stops all runtimes or leaves them running (configurable).
-
-#### `daemon.status() → DaemonStatus`
-
-```js
-daemon.status();
-// → {
-//   pid: 12345,
-//   uptime: 86400,
-//   runtimes: 3,
-//   registryConnected: true,
-//   tunnels: 1,
-//   heads: ['mrmd-electron', 'mrmd-vscode'],   // connected clients
-// }
-```
-
-### Event bus
-
-The daemon emits events that any connected head can subscribe to. This powers notifications, status indicators, and live updates across all open editors.
-
-#### `daemon.on(event, callback)`
-
-```js
-daemon.on('runtime:started',  (rt) => { /* runtime came up */ });
-daemon.on('runtime:stopped',  (rt) => { /* runtime went down */ });
-daemon.on('runtime:crashed',  (rt) => { /* unexpected exit */ });
-daemon.on('runtime:output',   (rt, data) => { /* stdout/stderr from execution */ });
-daemon.on('execution:done',   (rt, result) => { /* cell finished */ });
-daemon.on('target:online',    (target) => { /* remote machine came online */ });
-daemon.on('target:offline',   (target) => { /* remote machine went offline */ });
-daemon.on('package:missing',  (rt, pkg) => { /* import failed, package not installed */ });
-daemon.on('health:warning',   (check) => { /* something needs attention */ });
-```
-
-Heads turn these into their own UX:
-- **Electron tray app** → native OS notifications, badge count, tray menu
-- **VS Code** → status bar updates, notification popups
-- **CLI** → log lines, `mrmd watch` live output
-
-### Head connection
-
-Heads connect to the daemon over the local socket. If no daemon is running, heads can either start one automatically or run in standalone mode (services in-process, no persistence across editor restarts).
-
-```js
-import { connectDaemon } from 'mrmd-core';
-
-// Connect to running daemon (or start one)
-const client = await connectDaemon({ autoStart: true });
-
-// Use services through the daemon (same API as direct use)
-const runtimes = client.runtimes;
-const prefs = client.preferences;
-const rt = await runtimes.start({ ... });
-
-// Subscribe to events
-client.on('runtime:crashed', (rt) => {
-  showNotification(`Runtime ${rt.name} crashed`);
-});
-```
-
-### Process management
-
-| Platform | How the daemon runs |
-|----------|-------------------|
-| Linux | systemd user service (`mrmd daemon` installs it) |
-| macOS | launchd agent (`~/Library/LaunchAgents/dev.mrmd.daemon.plist`) |
-| Windows | Startup task or Windows service |
-
-```bash
-# CLI commands
-mrmd daemon start          # start in background
-mrmd daemon stop           # graceful shutdown
-mrmd daemon status         # show what's running
-mrmd daemon logs           # tail daemon logs
-mrmd daemon install        # install as system service (auto-start on login)
-mrmd daemon uninstall      # remove system service
-```
-
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                     mrmd daemon                          │
-│                                                         │
-│  ┌─────────────┐  ┌──────────┐  ┌───────────────────┐  │
-│  │ RuntimeSvc  │  │ Registry │  │ Event Bus         │  │
-│  │ start/stop  │  │ heartbeat│  │ runtime:started   │  │
-│  │ list/attach │  │ tunnel   │  │ runtime:crashed   │  │
-│  │ consumers   │  │ sync     │  │ execution:done    │  │
-│  └─────────────┘  └──────────┘  └───────────────────┘  │
-│                                                         │
-│  Unix socket: /tmp/mrmd-daemon.sock                     │
-└──────────┬──────────────┬──────────────┬────────────────┘
-           │              │              │
-    ┌──────┴──────┐ ┌─────┴─────┐ ┌─────┴─────┐
-    │  Electron   │ │  VS Code  │ │   CLI     │
-    │  (tray app) │ │ (sidebar) │ │  (watch)  │
-    └─────────────┘ └───────────┘ └───────────┘
-```
-
-The daemon owns the runtimes. Heads are just views. Close all editors — runtimes keep running. Open a new editor — it reconnects and sees everything still there.
+Every check includes a `fix` hint when actionable — heads can display it as-is (CLI) or wire it to a button (Electron/VS Code).
 
 ---
 
@@ -1288,9 +1337,9 @@ mrmd-core
 
 | Concern | Where |
 |---------|-------|
-| Runtime lifecycle, preferences, project/file/asset ops, daemon, event bus | **mrmd-core** |
-| System tray icon, native notifications, desktop menus | mrmd-electron |
+| Daemon, runtimes, preferences, compute targets, event bus, settings, environment/package management, project/file/asset ops, recent files | **mrmd-core** |
+| System tray icon, native notifications, desktop menus, auto-start daemon | mrmd-electron |
 | HTTP API, auth, WebSocket proxy for browser clients | mrmd-server |
-| CLI parsing, terminal formatting, server setup, `mrmd daemon` process | mrmd-cli |
+| CLI parsing, terminal formatting, `mrmd daemon start/stop/status/install`, server setup | mrmd-cli |
 | VS Code sidebar, status bar, notification popups | mrmd-vscode |
 | CodeMirror editor, widgets, themes | mrmd-editor |
