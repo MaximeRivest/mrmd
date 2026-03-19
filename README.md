@@ -29,6 +29,7 @@ npm install mrmd-core
 | `ProjectService` | Discover projects, scan files, build nav trees |
 | `FileService` | Create, read, write, move, delete files with automatic link refactoring |
 | `AssetService` | Manage `_assets/` directory, hash-based dedup, orphan detection |
+| `RecentService` | Track recently opened files and projects across all heads |
 
 All pure Node.js. No Electron. No browser APIs. No Express.
 
@@ -415,6 +416,38 @@ Save with hash-based deduplication. Returns asset path.
 #### `assets.list(projectRoot) → Promise<AssetEntry[]>`
 #### `assets.delete(projectRoot, assetPath) → Promise<void>`
 #### `assets.findOrphans(projectRoot) → Promise<string[]>`
+
+---
+
+## RecentService
+
+Track recently opened files and projects. Shared across all heads — open a file in Electron, see it in the CLI's recent list.
+
+Stored in `<CONFIG_DIR>/recent.json`.
+
+```js
+import { RecentService } from 'mrmd-core';
+
+const recent = new RecentService();
+```
+
+#### `recent.addFile(filePath) → void`
+
+Record a file open. Moves it to the top if already present.
+
+#### `recent.addProject(projectRoot) → void`
+
+Record a project open.
+
+#### `recent.files(limit?) → string[]`
+
+Most recent files, newest first. Default limit: 50.
+
+#### `recent.projects(limit?) → string[]`
+
+Most recent project roots, newest first. Default limit: 20.
+
+#### `recent.clear() → void`
 
 ---
 
