@@ -35,7 +35,6 @@ npm install mrmd-core
 | `DocumentModel` | Parse a markdown file into structured cells, outputs, and frontmatter |
 | `Runner` | Execute a notebook headlessly — all cells or a subset |
 | `Exporter` | Convert notebooks to HTML, PDF, Python script, UV script |
-| `SearchService` | Full-text search across project documents |
 | `SettingsService` | User settings (API keys, editor prefs) shared across all heads |
 | `HealthService` | Diagnose the setup — what's installed, what's broken, what's missing |
 
@@ -793,38 +792,6 @@ Export to a [UV inline script](https://docs.astral.sh/uv/guides/scripts/) with d
 await exporter.toUvScript('/project/analysis.md');
 // → "#!/usr/bin/env -S uv run\n# /// script\n# requires-python = \">=3.12\"\n# dependencies = [\n#   \"pandas>=2.1\",\n# ]\n# ///\n\nimport pandas as pd\n..."
 ```
-
----
-
-## SearchService
-
-Full-text search across project documents.
-
-```js
-import { SearchService } from 'mrmd-core';
-
-const search = new SearchService();
-```
-
-#### `search.query(projectRoot, query, options?) → Promise<SearchResult[]>`
-
-```js
-await search.query('/project', 'rolling_mean');
-// → [
-//   { file: 'analysis.md', line: 45, column: 12, context: 'df["rolling_mean"] = df.price.rolling(7).mean()', type: 'code' },
-//   { file: 'methods.md', line: 12, column: 0, context: 'We compute a rolling_mean over 7 days...', type: 'prose' },
-// ]
-```
-
-Options:
-
-| Option | Description |
-|--------|-------------|
-| `fileGlob` | Filter files (e.g. `'*.md'`) |
-| `cellType` | Search only in `'code'`, `'prose'`, or `'output'` cells |
-| `language` | Search only in code cells of this language |
-| `maxResults` | Limit results |
-| `regex` | Treat query as regex |
 
 ---
 
