@@ -1487,6 +1487,8 @@ Internals:
 
 `npm install -g mrmd-core` gives you the `mrmd` command. `npm install mrmd-core` in a project gives you the library. One package, both uses.
 
+See [docs/cli.md](docs/cli.md) for the full CLI reference and phased implementation plan.
+
 ## Dependencies
 
 ```
