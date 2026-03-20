@@ -33,7 +33,7 @@ The first head to need mrmd auto-starts the daemon. On first start, the user is 
 | `connect()` | Connect to the daemon (auto-starts if needed). Single entry point for all heads. |
 | `SyncService` | Manage mrmd-sync servers — per-project Yjs sync for collaboration + file persistence |
 | `MonitorService` | Manage mrmd-monitor processes — headless execution that survives editor disconnects |
-| `AIService` | Manage the mrmd-ai server — shared AI inference |
+| `AIService` | AI completions, corrections, commands — in-process, uses `@mariozechner/pi-ai` for model routing |
 | `VoiceService` | Manage mrmd-voice — audio capture, transcription, text routing |
 | `RuntimeService` | Start, stop, restart, list runtimes; track which documents use which runtimes |
 | `Preferences` | Runtime configuration: scope, profiles, cwd, compute targets — per project and per notebook |
@@ -233,10 +233,10 @@ client.status();
 │  │  python, r,  │  │  per-project │  │  runtime:started   │ │
 │  │  julia, ...  │  │  Yjs + file  │  │  sync:saved        │ │
 │  ├──────────────┤  ├──────────────┤  │  monitor:crashed   │ │
-│  │ Monitors     │  │ AI           │  │  ai:started        │ │
-│  │  per-document│  │  shared      │  │  target:online     │ │
-│  ├──────────────┤  ├──────────────┤  │  voice:transcript  │ │
-│  │ Preferences  │  │ Voice        │  │  ...               │ │
+│  │ Monitors     │  │ AI (in-proc) │  │  target:online     │ │
+│  │  per-document│  │  pi-ai SDK   │  │  voice:transcript  │ │
+│  ├──────────────┤  ├──────────────┤  │  ...               │ │
+│  │ Preferences  │  │ Voice        │  │                    │ │
 │  │ Settings     │  │  shared      │  │                    │ │
 │  │ Recent       │  ├──────────────┤  │  → broadcast to    │ │
 │  │ Environment  │  │ Compute      │  │    all heads       │ │
@@ -509,30 +509,74 @@ mrmd.on('monitor:crashed',  (info) => { /* monitor died — executions may be lo
 
 ## AIService
 
-Manages the `mrmd-ai` server — a shared singleton for AI inference (completions, chat, commands). Started lazily on first use.
+AI completions, corrections, and commands. Runs in-process in the daemon — no separate Python server. Uses `@mariozechner/pi-ai` for multi-provider model routing (Anthropic, OpenAI, local models, etc.).
 
 ```js
 const ai = mrmd.ai;
 ```
 
-#### `ai.ensure() → Promise<AIInfo>`
+#### `ai.complete(request) → Promise<string>`
 
-Start the AI server if not running. Returns connection info.
+Complete text at cursor position.
 
 ```js
-const a = await ai.ensure();
-// → { port, url: 'http://127.0.0.1:44100', pid }
+await ai.complete({
+  kind: 'sentence',                    // 'sentence', 'paragraph', 'code-line', 'code-section'
+  before: 'The quick brown fox ',       // text before cursor
+  after: '',                            // text after cursor
+  language: null,                       // code language (for code completions)
+});
+// → 'jumps over the lazy dog.'
 ```
 
-#### `ai.stop() → Promise<void>`
+#### `ai.fix(request) → Promise<string>`
 
-#### `ai.status() → AIInfo | null`
-
-#### Events
+Fix grammar, spelling, or transcription errors.
 
 ```js
-mrmd.on('ai:started', (info) => { });
-mrmd.on('ai:stopped', (info) => { });
+await ai.fix({
+  kind: 'grammar',                     // 'grammar', 'transcription'
+  text: 'He dont like the wether today',
+});
+// → 'He doesn\'t like the weather today'
+```
+
+#### `ai.correctAndFinish(request) → Promise<string>`
+
+Correct errors and complete the current line or section.
+
+```js
+await ai.correctAndFinish({
+  kind: 'line',                        // 'line', 'section'
+  before: 'We analize the resu',
+  after: '',
+});
+// → 'We analyze the results of the experiment.'
+```
+
+#### `ai.command(request) → Promise<string>`
+
+Execute a free-form AI command on selected text.
+
+```js
+await ai.command({
+  instruction: 'Make this more concise',
+  text: 'In order to be able to achieve the goal of...',
+});
+// → 'To achieve...'
+```
+
+#### `ai.models() → ModelInfo[]`
+
+List available models from configured providers.
+
+```js
+ai.models();
+// → [
+//   { id: 'claude-sonnet-4-20250514', provider: 'anthropic', available: true },
+//   { id: 'gpt-4o', provider: 'openai', available: true },
+//   ...
+// ]
 ```
 
 ---
@@ -1400,7 +1444,8 @@ Every check includes a `fix` hint when actionable — heads can display it as-is
 
 ```
 mrmd-core
-  ├── mrmd-project    (pure logic: FSML, links, scaffolding)
+  ├── mrmd-project        (pure logic: FSML, links, scaffolding)
+  ├── @mariozechner/pi-ai (LLM model routing — Anthropic, OpenAI, local, etc.)
   └── (node builtins: fs, path, os, child_process, net, crypto)
 ```
 
