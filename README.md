@@ -1,4 +1,4 @@
-# mrmd-core
+# mrmd
 
 Headless service layer for mrmd — daemon, runtime lifecycle, project discovery, file operations.
 
@@ -6,25 +6,25 @@ Headless service layer for mrmd — daemon, runtime lifecycle, project discovery
                       ┌── mrmd-cli
                       ├── mrmd-electron
   mrmd daemon ◄───────┼── mrmd-vscode
-  (mrmd-core)         ├── mrmd-server
+  (mrmd)         ├── mrmd-server
                       └── ...
 ```
 
 Every head connects to the daemon via `connect()`. The daemon owns all runtimes, state, and connections. There is no in-process alternative — if the daemon isn't running, heads can't execute code.
 
-This is a fresh implementation. The existing `mrmd-electron/src/services/` code is reference material for behavior and edge cases, but mrmd-core is not an extraction — it's a clean rewrite.
+This is a fresh implementation. The existing `mrmd-electron/src/services/` code is reference material for behavior and edge cases, but mrmd is not an extraction — it's a clean rewrite.
 
 ## Install
 
 ```bash
-npm install mrmd-core
+npm install mrmd
 ```
 
 ---
 
 ## Overview
 
-mrmd-core runs as a **daemon** — a long-lived background process that owns all runtimes, state, and connections. Every head (Electron, VS Code, CLI, browser) connects to the daemon. `connect()` is the single entry point.
+mrmd runs as a **daemon** — a long-lived background process that owns all runtimes, state, and connections. Every head (Electron, VS Code, CLI, browser) connects to the daemon. `connect()` is the single entry point.
 
 The first head to need mrmd auto-starts the daemon. On first start, the user is asked whether they want to allow the daemon to run in the background and whether they want it to start automatically on login. On first close, the user is asked if they want to keep it running. If yes, the daemon stays alive — keeping runtimes loaded, tunnels open, GPU memory allocated — until the user explicitly stops it or reboots. Users are reassured they can always change these preferences later in the tray app or via `mrmd daemon`.
 
@@ -90,7 +90,7 @@ There is exactly one daemon per machine. It works best always-on and started on 
 The daemon handles its own initialization. On first start it creates config directories, default preferences, and the runtime registry. No separate `init()` step — `connect()` triggers everything.
 
 ```js
-import { connect } from 'mrmd-core';
+import { connect } from 'mrmd';
 
 const client = await connect();
 // First time:
@@ -128,7 +128,7 @@ mrmd daemon uninstall      # remove system service
 Programmatically (used by `mrmd-cli` internally):
 
 ```js
-import { Daemon } from 'mrmd-core';
+import { Daemon } from 'mrmd';
 
 const daemon = new Daemon();
 await daemon.start({
@@ -158,7 +158,7 @@ Heads get proxied access to these over the socket. The proxy implements the same
 ### Connecting from a head
 
 ```js
-import { connect } from 'mrmd-core';
+import { connect } from 'mrmd';
 
 // Connect to running daemon, or start one if none is running
 const client = await connect();
@@ -259,7 +259,7 @@ client.status();
 ## Typical flow
 
 ```js
-import { connect } from 'mrmd-core';
+import { connect } from 'mrmd';
 
 // 1. Connect to daemon (auto-starts if needed)
 const client = await connect();
@@ -977,7 +977,7 @@ Parse a markdown file into structured cells, outputs, and frontmatter. This is t
 Pure parsing, no state — can be used directly without the daemon.
 
 ```js
-import { DocumentModel } from 'mrmd-core';
+import { DocumentModel } from 'mrmd';
 ```
 
 #### `DocumentModel.parse(content) → Document`
@@ -1070,7 +1070,7 @@ process.exit(result.status === 'ok' ? 0 : 1);
 Convert notebooks to other formats. Pure transformation — can be used directly without the daemon.
 
 ```js
-import { Exporter } from 'mrmd-core';
+import { Exporter } from 'mrmd';
 
 const exporter = new Exporter();
 ```
@@ -1446,7 +1446,7 @@ One npm package.
 
 ```
 Published to npm:
-  mrmd-core                ← library + CLI (installs `mrmd` command)
+  mrmd                ← library + CLI (installs `mrmd` command)
 
 Internals:
   src/
@@ -1480,23 +1480,73 @@ Internals:
 
 ```json
 {
-  "name": "mrmd-core",
+  "name": "mrmd",
   "bin": { "mrmd": "bin/mrmd.js" }
 }
 ```
 
-`npm install -g mrmd-core` gives you the `mrmd` command. `npm install mrmd-core` in a project gives you the library. One package, both uses.
+`npm install -g mrmd` gives you the `mrmd` command. `npm install mrmd` in a project gives you the library. One package, both uses.
 
 See [docs/cli.md](docs/cli.md) for the full CLI reference and phased implementation plan.
+
+---
+
+## Distribution
+
+Users should never need to install Node.js or run npm. Each head bundles mrmd through its native distribution channel.
+
+| User | How they get mrmd | Sees Node/npm? |
+|------|-------------------|:--------------:|
+| **VS Code** | Install extension from marketplace | No |
+| **Neovim** | Plugin manager (lazy.nvim, etc.) | No |
+| **Electron desktop app** | Download app | No |
+| **Browser** | `pip install mrmd` or `uvx mrmd` (opens in browser) | No |
+| **Server setup** | Standalone binary download (like `uv`) | No |
+| **JS developer** | `npm install -g mrmd` | Yes |
+
+### How each channel works
+
+**VS Code / Neovim extensions** bundle the daemon JS inside the extension package. The extension activates, starts the daemon from its bundled copy, and talks to it. The user installs one extension — done.
+
+**Electron** already includes Node.js. The app bundles mrmd as a dependency and starts the daemon on launch.
+
+**Python users** continue to use `pip install mrmd` or `uvx mrmd`. The Python package either:
+- Keeps its own orchestration (current behavior, works today)
+- Or becomes a thin wrapper that downloads the standalone daemon binary on first run
+
+Either way, Python users never see npm.
+
+**Server / CI** gets a standalone binary — Node.js compiled into a single executable using Node.js SEA (Single Executable Application) or `bun compile`. Download one file, run it:
+
+```bash
+# Download
+curl -fsSL https://mrmd.dev/install.sh | sh
+
+# Or on the server
+mrmd setup
+```
+
+**JS developers** who want the library or prefer npm:
+
+```bash
+npm install -g mrmd    # CLI
+npm install mrmd       # library
+```
+
+### The principle
+
+mrmd is written in JS. That's an implementation detail. Users interact through their ecosystem's native package manager — marketplace, pip, brew, curl. The JS is invisible.
+
+---
 
 ## Dependencies
 
 ```
-mrmd-core
-  ├── mrmd-project        (pure logic: FSML, links, scaffolding)
+mrmd
   ├── @mariozechner/pi-ai (LLM model routing — Anthropic, OpenAI, local, etc.)
+  ├── yaml                (config parsing)
   ├── yjs + y-protocols   (CRDT sync — used by sync + monitor services)
-  ├── ws                  (WebSocket — used by sync + monitor + daemon socket)
+  ├── ws                  (WebSocket — sync, monitor, daemon socket)
   └── (node builtins: fs, path, os, child_process, net, crypto)
 ```
 
@@ -1504,9 +1554,8 @@ mrmd-core
 
 | Concern | Where |
 |---------|-------|
-| Daemon, runtimes, preferences, compute targets, event bus, settings, environment/package management, project/file/asset ops, recent files, runner | **mrmd-core** |
-| System tray icon, native notifications, desktop menus, auto-start daemon | mrmd-electron |
-| HTTP API, auth, WebSocket proxy for browser clients | mrmd-server |
-| CLI parsing, terminal formatting, `mrmd daemon start/stop/status/install`, server setup | mrmd-cli |
-| VS Code sidebar, status bar, notification popups | mrmd-vscode |
+| Daemon, all services, CLI (`bin/mrmd.js`) | **mrmd** |
+| System tray, native notifications, desktop menus | mrmd-electron |
+| HTTP API, auth, WebSocket proxy for browsers | mrmd-server |
+| VS Code sidebar, status bar, popups | mrmd-vscode |
 | CodeMirror editor, widgets, themes | mrmd-editor |

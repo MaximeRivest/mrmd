@@ -11,7 +11,7 @@ This is the primary interface for:
 ## Install
 
 ```bash
-npm install -g mrmd-core
+npm install -g mrmd
 ```
 
 Installs the `mrmd` command globally.
@@ -54,7 +54,7 @@ mrmd daemon stop
 4. On deactivate:     do nothing (daemon stays alive)
 ```
 
-The extension doesn't import mrmd-core. It doesn't need Node.js APIs. It just shells out to `mrmd` and speaks HTTP to the MRP endpoint. This works for VS Code, Neovim, Emacs, Sublime, anything.
+The extension doesn't import mrmd. It doesn't need Node.js APIs. It just shells out to `mrmd` and speaks HTTP to the MRP endpoint. This works for VS Code, Neovim, Emacs, Sublime, anything.
 
 #### Commands
 
