@@ -1440,12 +1440,53 @@ Every check includes a `fix` hint when actionable — heads can display it as-is
 
 ---
 
+## Package structure
+
+Two published npm packages. That's it.
+
+```
+Published to npm:
+  mrmd-core                ← library (daemon + all services)
+  mrmd-cli                 ← CLI (depends on mrmd-core, installs `mrmd` command)
+
+mrmd-core internals:
+  src/
+    connect.js             ← connect() entry point
+    daemon.js              ← daemon process, socket server, event bus
+    services/
+      runtime.js           ← RuntimeService
+      sync.js              ← SyncService (was mrmd-sync package)
+      monitor.js           ← MonitorService (was mrmd-monitor package)
+      ai.js                ← AIService (was mrmd-ai, now JS + pi-ai)
+      voice.js             ← VoiceService (was mrmd-voice package)
+      preferences.js       ← Preferences
+      project.js           ← ProjectService
+      file.js              ← FileService
+      asset.js             ← AssetService
+      environment.js       ← EnvironmentService
+      packages.js          ← PackageService
+      recent.js            ← RecentService
+      settings.js          ← SettingsService
+      health.js            ← HealthService
+      compute-targets.js   ← ComputeTargets
+    document-model.js      ← DocumentModel (parsing)
+    runner.js              ← Runner (headless execution)
+    exporter.js            ← Exporter (html, pdf, script)
+    utils/
+      network.js           ← findFreePort, waitForPort
+      platform.js          ← getConfigDir, isWin, kill helpers
+```
+
+Sync, monitor, AI, and voice were separate packages (`mrmd-sync`, `mrmd-monitor`, `mrmd-ai`, `mrmd-voice`). They're now internal modules — none of them are usable without the daemon, so there's no reason to publish them separately.
+
 ## Dependencies
 
 ```
 mrmd-core
   ├── mrmd-project        (pure logic: FSML, links, scaffolding)
   ├── @mariozechner/pi-ai (LLM model routing — Anthropic, OpenAI, local, etc.)
+  ├── yjs + y-protocols   (CRDT sync — used by sync + monitor services)
+  ├── ws                  (WebSocket — used by sync + monitor + daemon socket)
   └── (node builtins: fs, path, os, child_process, net, crypto)
 ```
 
