@@ -1,0 +1,27 @@
+{
+  "name": "mrmd",
+  "version": "0.0.1",
+  "description": "The mrmd daemon, CLI, and service layer",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "mrmd": "bin/mrmd.js"
+  },
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "bin",
+    "README.md",
+    "docs"
+  ],
+  "scripts": {
+    "start": "node bin/mrmd.js daemon start",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
