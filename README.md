@@ -1442,14 +1442,13 @@ Every check includes a `fix` hint when actionable — heads can display it as-is
 
 ## Package structure
 
-Two published npm packages. That's it.
+One npm package.
 
 ```
 Published to npm:
-  mrmd-core                ← library (daemon + all services)
-  mrmd-cli                 ← CLI (depends on mrmd-core, installs `mrmd` command)
+  mrmd-core                ← library + CLI (installs `mrmd` command)
 
-mrmd-core internals:
+Internals:
   src/
     connect.js             ← connect() entry point
     daemon.js              ← daemon process, socket server, event bus
@@ -1475,9 +1474,18 @@ mrmd-core internals:
     utils/
       network.js           ← findFreePort, waitForPort
       platform.js          ← getConfigDir, isWin, kill helpers
+  bin/
+    mrmd.js                ← CLI entry point
 ```
 
-Sync, monitor, AI, and voice were separate packages (`mrmd-sync`, `mrmd-monitor`, `mrmd-ai`, `mrmd-voice`). They're now internal modules — none of them are usable without the daemon, so there's no reason to publish them separately.
+```json
+{
+  "name": "mrmd-core",
+  "bin": { "mrmd": "bin/mrmd.js" }
+}
+```
+
+`npm install -g mrmd-core` gives you the `mrmd` command. `npm install mrmd-core` in a project gives you the library. One package, both uses.
 
 ## Dependencies
 
