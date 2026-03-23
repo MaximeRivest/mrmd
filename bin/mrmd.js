@@ -190,6 +190,138 @@ async function runtimeList(flags) {
   }
 }
 
+// ── sync commands ─────────────────────────────────────────────
+
+async function syncEnsure(flags) {
+  const projectRoot = args[2];
+  if (!projectRoot) {
+    console.error('Usage: mrmd sync ensure <project-root>');
+    process.exit(1);
+  }
+
+  const { resolve: resolvePath } = await import('path');
+  const root = resolvePath(process.cwd(), projectRoot);
+
+  const client = await connect();
+  try {
+    const info = await client.sync.ensure(root);
+    output(info, flags.json);
+  } finally {
+    client.disconnect();
+  }
+}
+
+async function syncStop(flags) {
+  const projectRoot = args[2];
+  if (!projectRoot) {
+    console.error('Usage: mrmd sync stop <project-root>');
+    process.exit(1);
+  }
+
+  const { resolve: resolvePath } = await import('path');
+  const root = resolvePath(process.cwd(), projectRoot);
+
+  const client = await connect();
+  try {
+    await client.sync.stop(root);
+    if (flags.json) {
+      output({ stopped: true }, true);
+    } else {
+      console.log(`Stopped sync for ${root}`);
+    }
+  } finally {
+    client.disconnect();
+  }
+}
+
+async function syncList(flags) {
+  const client = await connect();
+  try {
+    const list = await client.sync.list();
+    if (flags.json) {
+      output(list, true);
+    } else if (list.length === 0) {
+      console.log('No sync servers running');
+    } else {
+      for (const s of list) {
+        console.log(`  ${s.projectRoot}`);
+        console.log(`    port ${s.port}  ${s.documents} docs  ${s.connections} connections`);
+      }
+    }
+  } finally {
+    client.disconnect();
+  }
+}
+
+// ── monitor commands ──────────────────────────────────────────
+
+async function monitorEnsure(flags) {
+  const documentPath = args[2];
+  const syncPortStr = flags['sync-port'] || flags.syncPort;
+  if (!documentPath || !syncPortStr) {
+    console.error('Usage: mrmd monitor ensure <document-path> --sync-port <port>');
+    process.exit(1);
+  }
+
+  const { resolve: resolvePath } = await import('path');
+  const docPath = resolvePath(process.cwd(), documentPath);
+  const syncPort = parseInt(syncPortStr, 10);
+
+  const client = await connect();
+  try {
+    const info = await client.monitors.ensure(docPath, syncPort, {
+      projectRoot: flags['project-root'] || flags.projectRoot,
+      cwd: flags.cwd,
+    });
+    output(info, flags.json);
+  } finally {
+    client.disconnect();
+  }
+}
+
+async function monitorStop(flags) {
+  const documentPath = args[2];
+  if (!documentPath) {
+    console.error('Usage: mrmd monitor stop <document-path>');
+    process.exit(1);
+  }
+
+  const { resolve: resolvePath } = await import('path');
+  const docPath = resolvePath(process.cwd(), documentPath);
+
+  const client = await connect();
+  try {
+    await client.monitors.stop(docPath);
+    if (flags.json) {
+      output({ stopped: true }, true);
+    } else {
+      console.log(`Stopped monitor for ${docPath}`);
+    }
+  } finally {
+    client.disconnect();
+  }
+}
+
+async function monitorList(flags) {
+  const client = await connect();
+  try {
+    const list = await client.monitors.list();
+    if (flags.json) {
+      output(list, true);
+    } else if (list.length === 0) {
+      console.log('No monitors running');
+    } else {
+      for (const m of list) {
+        const status = m.connected ? '● active' : '○ disconnected';
+        const execs = m.activeExecutions > 0 ? `  ${m.activeExecutions} executing` : '';
+        console.log(`  ${m.documentPath}     ${status}${execs}`);
+      }
+    }
+  } finally {
+    client.disconnect();
+  }
+}
+
 // ── status ────────────────────────────────────────────────────
 
 async function statusCommand(flags) {
@@ -197,17 +329,37 @@ async function statusCommand(flags) {
 
   try {
     const client = await connect();
-    const list = await client.runtimes.list();
+    const runtimes = await client.runtimes.list();
+    const syncServers = await client.sync.list();
+    const monitors = await client.monitors.list();
     client.disconnect();
 
-    if (list.length > 0) {
+    if (runtimes.length > 0) {
       console.log('');
       console.log('RUNTIMES');
-      for (const rt of list) {
+      for (const rt of runtimes) {
         const consumers = rt.consumers?.length
           ? rt.consumers.map(c => `\n           └─ ${c}`).join('')
           : '';
         console.log(`  ${rt.language.padEnd(8)} ${rt.name}  port ${rt.port}  ● alive${consumers}`);
+      }
+    }
+
+    if (syncServers.length > 0) {
+      console.log('');
+      console.log('SYNC');
+      for (const s of syncServers) {
+        console.log(`  ${s.projectRoot}  port ${s.port}  ${s.documents} docs`);
+      }
+    }
+
+    if (monitors.length > 0) {
+      console.log('');
+      console.log('MONITORS');
+      for (const m of monitors) {
+        const status = m.connected ? '● active' : '○ disconnected';
+        const execs = m.activeExecutions > 0 ? `  ${m.activeExecutions} executing` : '';
+        console.log(`  ${m.documentPath}     ${status}${execs}`);
       }
     }
   } catch {
@@ -233,10 +385,21 @@ RUNTIME
     --json                       JSON output
   mrmd runtime stop <name>     Stop a runtime
   mrmd runtime list            List running runtimes
-    --json                       JSON output
+
+SYNC
+  mrmd sync ensure <project>   Start sync server for a project (or return existing)
+  mrmd sync stop <project>     Stop a project's sync server
+  mrmd sync list               List running sync servers
+
+MONITOR
+  mrmd monitor ensure <doc>    Start monitor for a document
+    --sync-port <port>           sync server port (required)
+    --project-root <path>        project root for linked-table assets
+  mrmd monitor stop <doc>      Stop a document's monitor
+  mrmd monitor list            List running monitors
 
 STATUS
-  mrmd status                  Overview of daemon + runtimes
+  mrmd status                  Overview of daemon, runtimes, sync, monitors
 
 OPTIONS
   --json                       Machine-readable JSON output
@@ -262,6 +425,18 @@ if (!command || command === '--help' || command === 'help') {
   runtimeStop(flags);
 } else if (command === 'runtime' && subcommand === 'list') {
   runtimeList(flags);
+} else if (command === 'sync' && subcommand === 'ensure') {
+  syncEnsure(flags);
+} else if (command === 'sync' && subcommand === 'stop') {
+  syncStop(flags);
+} else if (command === 'sync' && (subcommand === 'list' || !subcommand)) {
+  syncList(flags);
+} else if (command === 'monitor' && subcommand === 'ensure') {
+  monitorEnsure(flags);
+} else if (command === 'monitor' && subcommand === 'stop') {
+  monitorStop(flags);
+} else if (command === 'monitor' && (subcommand === 'list' || !subcommand)) {
+  monitorList(flags);
 } else if (command === 'status') {
   statusCommand(flags);
 } else if (command === '--version' || command === 'version') {

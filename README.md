@@ -450,11 +450,11 @@ const sync = mrmd.sync;
 
 #### `sync.ensure(projectRoot) → Promise<SyncInfo>`
 
-Start a sync server for a project, or return the existing one. Reference-counted — multiple documents in the same project share one server.
+Start a sync server for a project, or return the existing one. Multiple documents in the same project share one server.
 
 ```js
 const s = await sync.ensure('/path/to/project');
-// → { projectRoot, port, wsUrl: 'ws://127.0.0.1:43210', pid, consumers: 2 }
+// → { projectRoot, port, wsUrl: 'ws://127.0.0.1:43210', documents: 3, connections: 2, startedAt: '...' }
 ```
 
 #### `sync.stop(projectRoot) → Promise<void>`
@@ -1454,8 +1454,8 @@ Internals:
     daemon.js              ← daemon process, socket server, event bus
     services/
       runtime.js           ← RuntimeService
-      sync.js              ← SyncService (was mrmd-sync package)
-      monitor.js           ← MonitorService (was mrmd-monitor package)
+      sync.js              ← SyncService
+      monitor.js           ← MonitorService
       ai.js                ← AIService (was mrmd-ai, now JS + pi-ai)
       voice.js             ← VoiceService (was mrmd-voice package)
       preferences.js       ← Preferences
@@ -1559,3 +1559,8 @@ mrmd
 | HTTP API, auth, WebSocket proxy for browsers | mrmd-server |
 | VS Code sidebar, status bar, popups | mrmd-vscode |
 | CodeMirror editor, widgets, themes | mrmd-editor |
+r |
+editor, widgets, themes | mrmd-editor |
+r |
+editor, widgets, themes | mrmd-editor |
+d-editor |

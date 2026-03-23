@@ -76,6 +76,20 @@ class DaemonClient extends EventEmitter {
       attach: (name, documentPath) => this._call('runtime.attach', { name, documentPath }),
       detach: (name, documentPath) => this._call('runtime.detach', { name, documentPath }),
     };
+
+    this.sync = {
+      ensure: (projectRoot, options) => this._call('sync.ensure', { projectRoot, ...options }),
+      stop: (projectRoot) => this._call('sync.stop', { projectRoot }),
+      list: () => this._call('sync.list'),
+      get: (projectRoot) => this._call('sync.get', { projectRoot }),
+    };
+
+    this.monitors = {
+      ensure: (documentPath, syncPort, options) => this._call('monitor.ensure', { documentPath, syncPort, ...options }),
+      stop: (documentPath) => this._call('monitor.stop', { documentPath }),
+      list: () => this._call('monitor.list'),
+      get: (documentPath) => this._call('monitor.get', { documentPath }),
+    };
   }
 
   async _connect() {
