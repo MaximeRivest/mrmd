@@ -7,7 +7,9 @@
 
 import { spawn } from 'child_process';
 import { findFreePort, waitForPort } from '../utils/network.js';
-import { findSiblingBinary, isProcessAlive, killProcessTree } from '../utils/platform.js';
+import { isProcessAlive, killProcessTree } from '../utils/platform.js';
+import { getDescriptor } from '../descriptors/index.js';
+import { captureShellEnv, loadDotEnv } from '../utils/shell-env.js';
 
 export class RuntimeService {
   constructor() {
@@ -19,6 +21,27 @@ export class RuntimeService {
 
     /** @type {Map<string, string[]>} name -> document paths */
     this.consumers = new Map();
+
+    /**
+     * Cached login-shell environment.
+     * Captured once at first runtime start so that spawned runtimes
+     * inherit the user's full interactive env (.bashrc, API keys, etc.)
+     * instead of the daemon's stripped-down process.env.
+     * @type {Record<string, string>|null}
+     */
+    this._shellEnv = null;
+  }
+
+  /**
+   * Get the base environment for spawning runtimes.
+   * Captures the user's login shell env on first call.
+   * @returns {Record<string, string>}
+   */
+  _getBaseEnv() {
+    if (!this._shellEnv) {
+      this._shellEnv = captureShellEnv();
+    }
+    return this._shellEnv;
   }
 
   /**
@@ -34,10 +57,13 @@ export class RuntimeService {
    * @returns {Promise<RuntimeInfo>}
    */
   async start(config) {
-    const { name, language, cwd } = config;
-    if (!name || !language || !cwd) {
-      throw new Error('name, language, and cwd are required');
+    const { language, cwd } = config;
+    if (!language || !cwd) {
+      throw new Error('language and cwd are required');
     }
+    // Auto-generate a stable name from language + cwd so callers
+    // get reuse without having to track names themselves.
+    const name = config.name || `${language}:${cwd}`;
 
     // Reuse existing
     const existing = this.runtimes.get(name);
@@ -52,18 +78,20 @@ export class RuntimeService {
 
     const descriptor = this._getDescriptor(language);
     const port = await findFreePort();
-    const binary = descriptor.findBinary(config);
+    const found = await descriptor.findBinary(config);
 
-    if (!binary) {
+    if (!found) {
       throw new Error(`No binary found for ${language}. Is mrmd-${language} installed?`);
     }
 
-    const args = descriptor.buildArgs(port, config);
-    const env = { ...process.env, ...(config.env || {}) };
+    const spawnArgs = [...found.commandArgs, ...descriptor.buildArgs(port, config)];
+    const baseEnv = this._getBaseEnv();
+    const dotEnv = loadDotEnv(cwd);
+    const env = { ...baseEnv, ...dotEnv, ...(found.spawnEnv || {}), ...(config.env || {}) };
 
-    console.log(`[runtime] Starting "${name}" (${language}) on port ${port}: ${binary} ${args.join(' ')}`);
+    console.log(`[runtime] Starting "${name}" (${language}) on port ${port}: ${found.command} ${spawnArgs.join(' ')}`);
 
-    const proc = spawn(binary, args, {
+    const proc = spawn(found.command, spawnArgs, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
@@ -107,8 +135,8 @@ export class RuntimeService {
       port,
       url: `http://127.0.0.1:${port}/mrp/v1`,
       cwd,
-      interpreter: binary,
-      environment: config.environment || null,
+      interpreter: found.interpreter,
+      environment: found.environment || config.environment || null,
       env: config.env || null,
       alive: true,
       startedAt: new Date().toISOString(),
@@ -229,6 +257,45 @@ export class RuntimeService {
   }
 
   /**
+   * Look up a runtime by its MRP base URL.
+   * @param {string} url
+   * @returns {RuntimeInfo|null}
+   */
+  getByUrl(url) {
+    for (const info of this.runtimes.values()) {
+      if (info.url === url) return info;
+    }
+    return null;
+  }
+
+  /**
+   * Interrupt a runtime via its MRP /interrupt endpoint.
+   * Runtime-specific semantics belong in the runtime package itself.
+   *
+   * @param {string} url - Runtime MRP base URL
+   * @returns {Promise<{ interrupted: boolean, strategy: string }>}
+   */
+  async interrupt(url) {
+    const info = this.getByUrl(url);
+    if (!info) {
+      throw new Error(`Runtime not found for URL: ${url}`);
+    }
+
+    try {
+      const res = await fetch(`${url}/interrupt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+        signal: AbortSignal.timeout(2000),
+      });
+      const data = await res.json();
+      return { interrupted: !!data?.interrupted, strategy: 'http' };
+    } catch (err) {
+      throw new Error(`Failed to interrupt runtime ${info.name}: ${err.message}`);
+    }
+  }
+
+  /**
    * Stop all runtimes.
    */
   async shutdown() {
@@ -239,22 +306,7 @@ export class RuntimeService {
   // ── Language descriptors ────────────────────────────────────
 
   _getDescriptor(language) {
-    const lang = language.toLowerCase();
-    const descriptors = {
-      bash: {
-        startupTimeout: 10000,
-        findBinary() {
-          return findSiblingBinary('bash');
-        },
-        buildArgs(port, config) {
-          return ['--port', String(port), '--cwd', config.cwd];
-        },
-      },
-      // More languages added here as we go:
-      // python, r, julia, node, ...
-    };
-
-    const desc = descriptors[lang];
+    const desc = getDescriptor(language);
     if (!desc) throw new Error(`Unsupported language: ${language}`);
     return desc;
   }

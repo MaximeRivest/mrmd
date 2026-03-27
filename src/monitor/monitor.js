@@ -9,6 +9,7 @@
 
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
+import WebSocket from 'ws';
 import { CoordinationProtocol, EXECUTION_STATUS } from './coordination.js';
 import { DocumentWriter } from './document.js';
 import { ExecutionHandler } from './execution.js';
@@ -118,6 +119,8 @@ export class RuntimeMonitor {
         // In the daemon there is no same-document multi-tab browser context, so
         // BroadcastChannel sync is unnecessary and only adds more moving pieces.
         disableBc: true,
+        // Node.js doesn't have a global WebSocket — provide the ws polyfill.
+        WebSocketPolyfill: WebSocket,
       });
 
       // Set up awareness
@@ -207,6 +210,8 @@ export class RuntimeMonitor {
     this._unsubscribe = this.coordination.observe((execId, exec, action) => {
       if (!exec) return;
 
+      this._log('debug', `Execution event: ${execId} status=${exec.status} action=${action} claimedBy=${exec.claimedBy} myId=${this.ydoc.clientID}`);
+
       // Handle cancellations
       if (exec.status === EXECUTION_STATUS.CANCELLED && exec.claimedBy === this.ydoc.clientID) {
         this._handleCancellation(execId, exec);
@@ -282,9 +287,247 @@ export class RuntimeMonitor {
     if (claimed) {
       this._log('info', 'Claimed execution', { execId });
       this._processingExecutions.add(execId);
+
+      // If no browser creates the output block within 1s, we create it
+      // ourselves and transition to READY. This supports headless execution
+      // via doc.execute where there is no browser.
+      setTimeout(() => {
+        const current = this.coordination.executions.get(execId);
+        if (current && current.status === EXECUTION_STATUS.CLAIMED) {
+          this._log('info', 'No browser created output block — creating headlessly', { execId });
+          this._createOutputBlockAndReady(execId, exec);
+        }
+      }, 1000);
     } else {
       this._log('debug', 'Could not claim execution (already claimed)', { execId });
     }
+  }
+
+  /**
+   * Create an output block in the Yjs document and transition to READY.
+   * Used for headless execution when no browser is present.
+   *
+   * Matches the Electron editor's behavior:
+   *   - If an output block already exists after the code cell, replace it
+   *   - Otherwise, insert a new output block after the code cell
+   *   - Never create duplicate output blocks
+   */
+  _createOutputBlockAndReady(execId, exec) {
+    try {
+      const ytext = this.ydoc.getText('content');
+      const text = ytext.toString();
+
+      // Find the code block that matches this execution's code
+      const codeCell = this._findCodeCell(text, exec.code, exec.language);
+
+      if (!codeCell) {
+        this._log('warn', 'Could not find code cell in document to insert output block', { execId });
+        // Insert at end of document as fallback
+        this._insertOutputBlock(execId, text.length);
+      } else {
+        // Check for an existing output block immediately after this code cell
+        const existingOutput = this._findOutputBlockAfterCell(text, codeCell.end);
+
+        if (existingOutput) {
+          // Replace the existing output block with a fresh one for this execId
+          this._log('debug', 'Replacing existing output block', { execId, oldStart: existingOutput.start, oldEnd: existingOutput.end });
+          this._replaceOutputBlock(execId, existingOutput.start, existingOutput.end);
+        } else {
+          // Insert a new output block after the code cell's closing fence
+          this._insertOutputBlock(execId, codeCell.end);
+        }
+      }
+
+      // Transition to READY
+      this.coordination.setOutputBlockReady(execId);
+    } catch (err) {
+      this._log('error', 'Failed to create output block headlessly', {
+        execId, error: err.message,
+      });
+      this.coordination.setError(execId, {
+        type: 'MonitorError',
+        message: `Failed to create output block: ${err.message}`,
+      });
+      this._processingExecutions.delete(execId);
+    }
+  }
+
+  /**
+   * Parse all fenced code blocks in the document using a line-by-line
+   * state machine. This is the only correct approach — regexes can't
+   * handle sequential fenced blocks because ``` is ambiguous without state.
+   *
+   * Matches the approach used by mrmd-editor/src/cells.js.
+   *
+   * @param {string} text - Full document text
+   * @returns {Array<{ language: string, code: string, start: number, end: number, codeStart: number, codeEnd: number }>}
+   */
+  _parseCodeBlocks(text) {
+    const blocks = [];
+    const lines = text.split('\n');
+
+    let inBlock = false;
+    let blockStart = 0;
+    let blockLang = '';
+    let codeStart = 0;
+    let charOffset = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const lineStart = charOffset;
+
+      if (!inBlock) {
+        // Opening fence: ```language or ```language context
+        const match = line.match(/^(`{3,})([\w:.-]*)(?:\s+\S+)?[\t ]*$/);
+        if (match) {
+          inBlock = true;
+          blockStart = lineStart;
+          blockLang = (match[2] || '').toLowerCase();
+          codeStart = lineStart + line.length + 1; // after the newline
+        }
+      } else {
+        // Closing fence
+        if (line.match(/^`{3,}\s*$/)) {
+          const codeEnd = lineStart;
+          const blockEnd = lineStart + line.length;
+
+          blocks.push({
+            language: blockLang,
+            code: text.slice(codeStart, codeEnd),
+            start: blockStart,
+            end: blockEnd,
+            codeStart,
+            codeEnd,
+          });
+
+          inBlock = false;
+        }
+      }
+
+      charOffset += line.length + 1; // +1 for the newline
+    }
+
+    return blocks;
+  }
+
+  /**
+   * Find a code cell in the document by matching its code content.
+   * Uses the state-machine parser, not regex.
+   *
+   * @param {string} text - Full document text
+   * @param {string} code - Code to find
+   * @param {string} language - Language identifier
+   * @returns {{ start: number, end: number }|null}
+   */
+  _findCodeCell(text, code, language) {
+    const blocks = this._parseCodeBlocks(text);
+    const trimmedCode = code.trim();
+
+    for (const block of blocks) {
+      // Skip output/stdin blocks
+      if (block.language.startsWith('output') || block.language.startsWith('stdin')) continue;
+
+      if (block.code.trim() === trimmedCode) {
+        // end: include the trailing newline after closing fence if present
+        const endPos = text[block.end] === '\n' ? block.end + 1 : block.end;
+        return { start: block.start, end: endPos };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Find an output block immediately following a code cell.
+   * Scans the parsed blocks to find the next block after cellEnd
+   * that is an output block.
+   *
+   * @param {string} text - Full document text
+   * @param {number} cellEnd - Position after the code cell ends
+   * @returns {{ start: number, end: number }|null}
+   */
+  _findOutputBlockAfterCell(text, cellEnd) {
+    const blocks = this._parseCodeBlocks(text);
+
+    for (const block of blocks) {
+      // Skip blocks before our cell
+      if (block.start < cellEnd) continue;
+
+      // Check if there's only whitespace between cellEnd and this block
+      const gap = text.slice(cellEnd, block.start);
+      if (gap.trim().length > 0) {
+        // Non-whitespace content between cell and this block — it's not
+        // a paired output block, it's a separate content section
+        return null;
+      }
+
+      // Is it an output block?
+      if (block.language.startsWith('output')) {
+        // Include trailing newline in the end position
+        const endPos = text[block.end] === '\n' ? block.end + 1 : block.end;
+        return { start: block.start, end: endPos };
+      }
+
+      // It's some other block right after our cell — no output block exists
+      return null;
+    }
+
+    return null;
+  }
+
+  /**
+   * Insert a new output block at a position in the Y.Text.
+   */
+  _insertOutputBlock(execId, position) {
+    const ytext = this.ydoc.getText('content');
+    this.ydoc.transact(() => {
+      const block = `\n\`\`\`output:${execId}\n\`\`\`\n`;
+      ytext.insert(position, block);
+    });
+  }
+
+  /**
+   * Remove an output block entirely (used when execution produces no output).
+   */
+  _removeOutputBlock(execId) {
+    const ytext = this.ydoc.getText('content');
+    const text = ytext.toString();
+    const blocks = this._parseCodeBlocks(text);
+
+    for (const block of blocks) {
+      if (block.language === `output:${execId}` || block.language.startsWith(`output:${execId}`)) {
+        // Remove the block including any leading newline
+        const removeStart = block.start > 0 && text[block.start - 1] === '\n'
+          ? block.start - 1
+          : block.start;
+        const removeEnd = text[block.end] === '\n' ? block.end + 1 : block.end;
+
+        this.ydoc.transact(() => {
+          ytext.delete(removeStart, removeEnd - removeStart);
+        });
+        this._log('debug', 'Removed empty output block', { execId });
+        return;
+      }
+    }
+  }
+
+  /**
+   * Replace an existing output block with a fresh empty one.
+   */
+  _replaceOutputBlock(execId, start, end) {
+    const ytext = this.ydoc.getText('content');
+    this.ydoc.transact(() => {
+      const text = ytext.toString();
+      const hadTrailingNewline = end > start && text[end - 1] === '\n';
+      const newBlock = hadTrailingNewline
+        ? `\`\`\`output:${execId}\n\`\`\`\n`
+        : `\`\`\`output:${execId}\n\`\`\``;
+      const length = end - start;
+      if (length > 0) {
+        ytext.delete(start, length);
+      }
+      ytext.insert(start, newBlock);
+    });
   }
 
   /**
@@ -404,6 +647,13 @@ export class RuntimeMonitor {
           onResult: (result) => {
             flushOutputNow();
             this._log('info', 'Execution completed', { execId, success: result.success });
+
+            // Clean up empty output blocks — if no output was produced,
+            // remove the block entirely so the document stays clean.
+            if (!latestOutput.trim()) {
+              this._removeOutputBlock(execId);
+            }
+
             this.coordination.setCompleted(execId, {
               result: result.result,
               displayData: result.displayData,
@@ -413,6 +663,14 @@ export class RuntimeMonitor {
           onError: (error) => {
             flushOutputNow();
             this._log('error', 'Execution error', { execId, error: error.message });
+
+            // Write the error message into the output block so it's visible
+            const errorText = error.message || error.type || 'Unknown error';
+            if (!latestOutput.trim()) {
+              // Only error output — put it in the block
+              this.writer.replaceOutput(execId, errorText + '\n');
+            }
+
             this.coordination.setError(execId, error);
           },
         },

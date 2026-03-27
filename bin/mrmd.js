@@ -77,34 +77,78 @@ async function daemonStart(flags) {
 }
 
 async function daemonStop(flags) {
+  const { getPidPath, isProcessAlive } = await import('../src/utils/platform.js');
+  const fs = await import('fs');
+  const pidPath = getPidPath();
+
+  // Strategy 1: Connect and ask the daemon to shut down gracefully.
+  // This triggers the proper teardown: monitors → sync → runtimes.
+  let sentSignal = false;
   try {
-    const client = await connect();
-    // Send stop via a direct call - daemon will shut down
-    await client._call('daemon.status'); // verify connection
-    client.disconnect();
+    const client = await connect({ connectTimeout: 3000, callTimeout: 3000, autoStart: false, autoReconnect: false });
+    try {
+      // Verify it's alive, then get its PID
+      const status = await client.status();
+      client.disconnect();
+
+      // Send SIGTERM — the daemon's signal handler calls this.stop()
+      // which does the graceful teardown.
+      if (status.pid && isProcessAlive(status.pid)) {
+        process.kill(status.pid, 'SIGTERM');
+        sentSignal = true;
+
+        // Wait for it to actually die
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline && isProcessAlive(status.pid)) {
+          await new Promise(r => setTimeout(r, 200));
+        }
+
+        if (isProcessAlive(status.pid)) {
+          // Force kill
+          try { process.kill(status.pid, 'SIGKILL'); } catch {}
+          console.log(`Daemon force-killed (pid ${status.pid})`);
+        } else {
+          console.log(`Daemon stopped (pid ${status.pid})`);
+        }
+        return;
+      }
+    } catch {
+      client.disconnect();
+    }
   } catch {
-    console.log('Daemon is not running');
-    return;
+    // connect() failed — daemon might be alive but socket is stale
   }
 
-  // Read PID and kill
-  const { getPidPath, isProcessAlive } = await import('../src/utils/platform.js');
-  const pidPath = getPidPath();
-  const fs = await import('fs');
+  // Strategy 2: Kill by PID file (fallback if connect fails).
   try {
     const data = JSON.parse(fs.readFileSync(pidPath, 'utf8'));
     if (data.pid && isProcessAlive(data.pid)) {
       process.kill(data.pid, 'SIGTERM');
-      console.log(`Daemon stopped (pid ${data.pid})`);
+      sentSignal = true;
+
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && isProcessAlive(data.pid)) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+
+      if (isProcessAlive(data.pid)) {
+        try { process.kill(data.pid, 'SIGKILL'); } catch {}
+        console.log(`Daemon force-killed (pid ${data.pid})`);
+      } else {
+        console.log(`Daemon stopped (pid ${data.pid})`);
+      }
+      return;
     }
-  } catch {
+  } catch {}
+
+  if (!sentSignal) {
     console.log('Daemon is not running');
   }
 }
 
 async function daemonStatus(flags) {
   try {
-    const client = await connect();
+    const client = await connect({ autoStart: false, connectTimeout: 2000, autoReconnect: false });
     const status = await client.status();
     client.disconnect();
 
@@ -158,7 +202,7 @@ async function runtimeStop(flags) {
 
   const client = await connect();
   try {
-    const ok = await client.runtimes.stop(name);
+    const ok = await client.runtimes.stop({ name });
     if (flags.json) {
       output({ stopped: ok }, true);
     } else {
@@ -172,7 +216,7 @@ async function runtimeStop(flags) {
 async function runtimeList(flags) {
   const client = await connect();
   try {
-    const list = await client.runtimes.list(flags.language || flags.lang);
+    const list = await client.runtimes.list({ language: flags.language || flags.lang });
     if (flags.json) {
       output(list, true);
     } else if (list.length === 0) {
@@ -204,7 +248,7 @@ async function syncEnsure(flags) {
 
   const client = await connect();
   try {
-    const info = await client.sync.ensure(root);
+    const info = await client.sync.ensure({ projectRoot: root });
     output(info, flags.json);
   } finally {
     client.disconnect();
@@ -223,7 +267,7 @@ async function syncStop(flags) {
 
   const client = await connect();
   try {
-    await client.sync.stop(root);
+    await client.sync.stop({ projectRoot: root });
     if (flags.json) {
       output({ stopped: true }, true);
     } else {
@@ -269,7 +313,9 @@ async function monitorEnsure(flags) {
 
   const client = await connect();
   try {
-    const info = await client.monitors.ensure(docPath, syncPort, {
+    const info = await client.monitors.ensure({
+      documentPath: docPath,
+      syncPort,
       projectRoot: flags['project-root'] || flags.projectRoot,
       cwd: flags.cwd,
     });
@@ -291,7 +337,7 @@ async function monitorStop(flags) {
 
   const client = await connect();
   try {
-    await client.monitors.stop(docPath);
+    await client.monitors.stop({ documentPath: docPath });
     if (flags.json) {
       output({ stopped: true }, true);
     } else {
@@ -320,6 +366,269 @@ async function monitorList(flags) {
   } finally {
     client.disconnect();
   }
+}
+
+// ── prefs commands ────────────────────────────────────────────
+
+async function prefsResolve(flags) {
+  const documentPath = args[2];
+  const language = args[3] || flags.language || flags.lang || 'python';
+
+  if (!documentPath) {
+    console.error('Usage: mrmd prefs resolve <document> [language]');
+    process.exit(1);
+  }
+
+  const { resolve: resolvePath } = await import('path');
+  const docPath = resolvePath(process.cwd(), documentPath);
+
+  const client = await connect();
+  try {
+    const config = await client.preferences.resolve({ documentPath: docPath, language });
+    if (flags.json) {
+      output(config, true);
+    } else {
+      console.log(`RESOLVED CONFIG for ${language} in ${docPath}`);
+      console.log(`  runtime     ${config.name}`);
+      console.log(`  scope       ${config.scope}`);
+      console.log(`  target      ${config.target}`);
+      console.log(`  environment ${config.environment || '(none)'}`);
+      console.log(`  interpreter ${config.interpreter || '(none)'}`);
+      console.log(`  cwd         ${config.cwd}`);
+      console.log(`  project     ${config.projectRoot}`);
+      console.log(`  via         ${config.via}`);
+      console.log(`  bridge      ${config.hasBridge ? '✓' : '✗'}`);
+      if (config.env && Object.keys(config.env).length > 0) {
+        console.log(`  env         ${JSON.stringify(config.env)}`);
+      }
+    }
+  } finally {
+    client.disconnect();
+  }
+}
+
+async function prefsSetProject(flags) {
+  const projectRoot = args[2];
+  const language = args[3];
+
+  if (!projectRoot || !language) {
+    console.error('Usage: mrmd prefs set-project <project> <language> [--environment PATH] [--scope SCOPE] [--target ID]');
+    process.exit(1);
+  }
+
+  const { resolve: resolvePath } = await import('path');
+  const root = resolvePath(process.cwd(), projectRoot);
+
+  const patch = { projectRoot: root, language };
+  if (flags.environment) patch.environment = resolvePath(process.cwd(), flags.environment);
+  if (flags.interpreter) patch.interpreter = resolvePath(process.cwd(), flags.interpreter);
+  if (flags.scope) patch.scope = flags.scope;
+  if (flags.target) patch.target = flags.target;
+  if (flags.cwd) patch.cwd = flags.cwd;
+
+  const client = await connect();
+  try {
+    await client.preferences.setProject(patch);
+    if (flags.json) {
+      output({ ok: true }, true);
+    } else {
+      console.log(`Set ${language} preferences for ${root}`);
+    }
+  } finally {
+    client.disconnect();
+  }
+}
+
+async function prefsShow(flags) {
+  const client = await connect();
+  try {
+    const { resolve: resolvePath } = await import('path');
+    const projectRoot = flags.project ? resolvePath(process.cwd(), flags.project) : undefined;
+    const prefs = await client.preferences.get({ projectRoot });
+    output(prefs, true); // always JSON — raw prefs are structured data
+  } finally {
+    client.disconnect();
+  }
+}
+
+// ── env commands ──────────────────────────────────────────────
+
+async function envDiscover(flags) {
+  const { findUv, findInterpreters, findEnvironments, resolveEnvironment, resolveInterpreter } = await import('../src/utils/python.js');
+  const { resolve: resolvePath } = await import('path');
+
+  const language = flags.language || flags.lang || 'python';
+  const cwd = flags.cwd || flags.project || process.cwd();
+  const projectRoot = flags['project-root'] || flags.project;
+
+  if (language !== 'python') {
+    console.log(`Discovery for ${language} is not yet supported.`);
+    return;
+  }
+
+  // Find uv
+  const uv = findUv();
+
+  // Interpreters
+  const interpreters = uv ? findInterpreters(uv) : [];
+
+  // Environments
+  const environments = findEnvironments({
+    cwd: resolvePath(cwd),
+    projectRoot: projectRoot ? resolvePath(projectRoot) : undefined,
+  });
+
+  // Resolve (what would be auto-selected)
+  const resolved = resolveEnvironment({
+    cwd: resolvePath(cwd),
+    projectRoot: projectRoot ? resolvePath(projectRoot) : undefined,
+  });
+  const resolvedInterp = resolveInterpreter({
+    environment: resolved?.environment,
+  });
+
+  if (flags.json) {
+    output({ interpreters, environments, resolved, resolvedInterpreter: resolvedInterp }, true);
+    return;
+  }
+
+  // ── Pretty print ─────────────────────────────────────────
+
+  // Resolved (what mrmd would auto-use)
+  if (resolved) {
+    console.log('RESOLVED (auto-selected)');
+    const bridge = resolved.hasBridge ? 'mrmd-python ✓' : 'mrmd-python ✗';
+    const ver = resolved.pythonVersion || '?';
+    console.log(`  ${resolved.environment}`);
+    console.log(`    python ${ver}  ${bridge}  via ${resolved.via}`);
+    if (resolvedInterp) {
+      console.log(`    interpreter: ${resolvedInterp.path}`);
+    }
+    console.log('');
+  } else {
+    console.log('RESOLVED');
+    console.log('  (none — no environment auto-detected for this directory)');
+    if (resolvedInterp) {
+      console.log(`  bare interpreter: ${resolvedInterp.path} (${resolvedInterp.version || '?'}, ${resolvedInterp.source})`);
+    }
+    console.log('');
+  }
+
+  // Interpreters
+  if (interpreters.length > 0) {
+    console.log(`INTERPRETERS (${interpreters.length})`);
+    for (const i of interpreters) {
+      const ver = (i.version || '?').padEnd(12);
+      const src = i.source.padEnd(10);
+      console.log(`  ${ver} ${src} ${i.path}`);
+    }
+  } else {
+    console.log('INTERPRETERS');
+    if (!uv) {
+      console.log('  (uv not found — install uv for comprehensive Python discovery)');
+    } else {
+      console.log('  (none found)');
+    }
+  }
+  console.log('');
+
+  // Environments
+  if (environments.length > 0) {
+    console.log(`ENVIRONMENTS (${environments.length})`);
+    for (const e of environments) {
+      const type = e.type.padEnd(6);
+      const ver = (e.pythonVersion || '?').padEnd(10);
+      const bridge = e.hasBridge ? 'mrmd-python ✓' : 'mrmd-python ✗';
+      const src = e.source.padEnd(16);
+      const marker = (resolved && e.path === resolved.environment) ? ' ← selected' : '';
+      console.log(`  ${type} ${ver} ${bridge.padEnd(15)} ${src} ${e.path}${marker}`);
+    }
+  } else {
+    console.log('ENVIRONMENTS');
+    console.log('  (none found)');
+    console.log('  Create one with: uv venv');
+  }
+}
+
+// ── executions commands ───────────────────────────────────────
+
+async function executionsList(flags) {
+  const client = await connect();
+  try {
+    const list = await client.executions.list({
+      active: flags.active || false,
+      documentPath: flags.document || flags.doc,
+      language: flags.language || flags.lang,
+      limit: flags.limit ? parseInt(flags.limit, 10) : undefined,
+    });
+    if (flags.json) {
+      output(list, true);
+    } else if (list.length === 0) {
+      console.log('No executions');
+    } else {
+      for (const exec of list) {
+        const status = _execStatusIcon(exec.status);
+        const lang = (exec.language || '?').padEnd(8);
+        const doc = require('path').basename(exec.documentPath || '');
+        const duration = _execDuration(exec);
+        const code = (exec.code || '').split('\n')[0].slice(0, 50);
+        console.log(`  ${status} ${lang} ${doc.padEnd(20)} ${duration.padEnd(8)} ${code}`);
+      }
+    }
+  } finally {
+    client.disconnect();
+  }
+}
+
+async function executionsCancel(flags) {
+  const documentPath = args[2];
+  const execId = args[3];
+
+  if (!documentPath) {
+    console.error('Usage: mrmd executions cancel <document> [execId]');
+    process.exit(1);
+  }
+
+  const { resolve: resolvePath } = await import('path');
+  const docPath = resolvePath(process.cwd(), documentPath);
+
+  const client = await connect();
+  try {
+    const result = await client.executions.cancel({
+      documentPath: docPath,
+      execId: execId || undefined,
+    });
+    if (flags.json) {
+      output(result, true);
+    } else {
+      console.log(`Cancelled ${result.cancelled.length} execution(s)`);
+    }
+  } finally {
+    client.disconnect();
+  }
+}
+
+function _execStatusIcon(status) {
+  switch (status) {
+    case 'requested': return '◯ queued  ';
+    case 'claimed':   return '◯ claimed ';
+    case 'ready':     return '◐ ready   ';
+    case 'running':   return '● running ';
+    case 'completed': return '✓ done    ';
+    case 'error':     return '✗ error   ';
+    case 'cancelled': return '⊘ cancel  ';
+    default:          return `? ${status}`.padEnd(10);
+  }
+}
+
+function _execDuration(exec) {
+  const start = exec.startedAt;
+  if (!start) return '';
+  const end = exec.completedAt || Date.now();
+  const ms = end - start;
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${(ms / 60000).toFixed(1)}m`;
 }
 
 // ── status ────────────────────────────────────────────────────
@@ -398,6 +707,30 @@ MONITOR
   mrmd monitor stop <doc>      Stop a document's monitor
   mrmd monitor list            List running monitors
 
+PREFERENCES
+  mrmd prefs resolve <doc> [lang]  Resolve effective config for a document
+  mrmd prefs set-project <project> <lang>  Set project-level override
+    --environment <path>           Python environment
+    --interpreter <path>           Python interpreter
+    --scope <scope>                notebook, project, or global
+    --target <id>                  Compute target (default: local)
+  mrmd prefs show                  Show raw preferences
+    --project <path>               Filter to a project
+
+EXECUTIONS
+  mrmd executions list         List executions across all documents
+    --active                     only running/queued
+    --document <path>            filter to one document
+    --language <lang>            filter by language
+    --json                       JSON output
+  mrmd executions cancel <doc> [execId]  Cancel executions
+
+ENV
+  mrmd env discover            Scan for Python interpreters and environments
+    --language <lang>            language to scan (default: python)
+    --project <path>             project directory to scan
+    --json                       JSON output
+
 STATUS
   mrmd status                  Overview of daemon, runtimes, sync, monitors
 
@@ -437,6 +770,18 @@ if (!command || command === '--help' || command === 'help') {
   monitorStop(flags);
 } else if (command === 'monitor' && (subcommand === 'list' || !subcommand)) {
   monitorList(flags);
+} else if (command === 'prefs' && subcommand === 'resolve') {
+  prefsResolve(flags);
+} else if (command === 'prefs' && subcommand === 'set-project') {
+  prefsSetProject(flags);
+} else if (command === 'prefs' && (subcommand === 'show' || !subcommand)) {
+  prefsShow(flags);
+} else if (command === 'executions' && (subcommand === 'list' || !subcommand)) {
+  executionsList(flags);
+} else if (command === 'executions' && subcommand === 'cancel') {
+  executionsCancel(flags);
+} else if (command === 'env' && (subcommand === 'discover' || subcommand === 'list' || !subcommand)) {
+  envDiscover(flags);
 } else if (command === 'status') {
   statusCommand(flags);
 } else if (command === '--version' || command === 'version') {

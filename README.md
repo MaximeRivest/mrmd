@@ -6,13 +6,35 @@ Headless service layer for mrmd — daemon, runtime lifecycle, project discovery
                       ┌── mrmd-cli
                       ├── mrmd-electron
   mrmd daemon ◄───────┼── mrmd-vscode
-  (mrmd)         ├── mrmd-server
+  (mrmd)              ├── mrmd-server
                       └── ...
 ```
 
 Every head connects to the daemon via `connect()`. The daemon owns all runtimes, state, and connections. There is no in-process alternative — if the daemon isn't running, heads can't execute code.
 
 This is a fresh implementation. The existing `mrmd-electron/src/services/` code is reference material for behavior and edge cases, but mrmd is not an extraction — it's a clean rewrite.
+
+## Core principle: Yjs is the bus
+
+Everything reads and writes through the shared Yjs document. Humans, AI agents, CLI tools, keyboard shortcuts, and runtimes all converge on the same `.md` file via Yjs. No head ever talks to a runtime directly.
+
+```
+Human (editor)  ──┐
+AI agent         ──┤                    ┌──────────┐
+CLI tool         ──┼──→ Yjs document ◄──┤ Monitor  ├──→ Runtime (MRP)
+Keyboard shortcut──┤    (Y.Map, Y.Text) │ (claims  │    python, bash,
+Another human   ──┘                    │  & runs)  │    r, julia, ...
+                                        └──────────┘
+```
+
+To execute code, a head writes a request into the Yjs document (`executionRequests` Y.Map, status: `REQUESTED`). The **monitor** — a headless Yjs peer managed by the daemon — claims the request, sends the code to the runtime via MRP, and streams the output back into the document. Every connected head sees the output appear in real time.
+
+This means:
+- **No direct runtime calls from heads.** Heads write intent into the document; the monitor executes.
+- **Execution survives disconnects.** The monitor is a daemon-owned process, not tied to any editor window.
+- **All participants see everything.** Two humans, an AI agent, and a CLI tool editing the same notebook all see each other's code and output instantly.
+- **One execution queue per document.** The monitor serializes execution — no duplicate runs, no race conditions.
+- **Audit trail for free.** Every execution is recorded in the Yjs history.
 
 ## Install
 
@@ -264,27 +286,96 @@ import { connect } from 'mrmd';
 // 1. Connect to daemon (auto-starts if needed)
 const client = await connect();
 
-// User opens analysis.md and runs a Python cell:
+const docPath = '/project/docs/analysis.md';
+const projectRoot = '/project';
 
-// 2. Resolve runtime config for this document + language
-const config = await client.preferences.resolve('/project/docs/analysis.md', 'python');
+// 2. Open the document (ensures sync server + monitor in one call)
+const { wsUrl } = await client.open(docPath, projectRoot);
+// Head can now join the Yjs room at wsUrl to see live edits
 
-// 3. Start or reuse the runtime (daemon manages the process)
-const rt = await client.runtimes.start(config);
+// 3. Ensure a runtime is available
+await client.runtimes.start({ language: 'python', cwd: projectRoot });
 
-// 4. Register this document as a consumer
-client.runtimes.attach(rt.name, '/project/docs/analysis.md');
+// 4. Request execution via the Yjs document
+//    The head NEVER calls the runtime directly.
+await client.execute(docPath, {
+  code: 'import pandas as pd\ndf = pd.read_csv("data.csv")\ndf.head()',
+  language: 'python',
+});
+// The monitor claims the request, sends it to the runtime via MRP,
+// and streams the output back into the Yjs document.
+// Every connected head sees the output appear in real time.
 
-// 5. Execute code via MRP
-const result = await fetch(`${rt.url}/execute`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ code: 'import pandas as pd\ndf = pd.read_csv("data.csv")\ndf.head()' }),
-}).then(r => r.json());
-
-// 6. User closes the document — runtime stays alive in the daemon
-client.runtimes.detach(rt.name, '/project/docs/analysis.md');
+// 5. User closes the document — runtime stays alive in the daemon
+client.disconnect();
 ```
+
+### Example: VS Code extension
+
+This is how a VS Code extension (or any head) should integrate with mrmd.
+The extension never imports runtime code — it only talks to the daemon and
+joins the Yjs room.
+
+```js
+// extension.ts — activate()
+import { connect } from 'mrmd';
+import * as Y from 'yjs';
+import { WebsocketProvider } from 'y-websocket';
+
+let client;
+
+export async function activate(context) {
+  // One daemon connection for the entire extension lifecycle
+  client = await connect();
+
+  // Listen for execution events across all documents
+  client.on('execution:done', ({ documentPath, execId }) => {
+    vscode.window.setStatusBarMessage(`✓ ${execId}`, 3000);
+  });
+}
+
+// Called when the user opens a .md file
+async function onDocumentOpen(documentPath, projectRoot) {
+  // 1. Open the document — daemon ensures sync + monitor
+  const { wsUrl } = await client.open(documentPath, projectRoot);
+
+  // 2. Join the Yjs room to see live content
+  const ydoc = new Y.Doc();
+  const provider = new WebsocketProvider(wsUrl, documentPath, ydoc);
+  const ytext = ydoc.getText('content');
+
+  // 3. Observe changes from all participants (other humans, AI, monitor output)
+  ytext.observe((event) => {
+    // Update the VS Code editor with the new content
+    applyYjsDeltaToEditor(event.delta);
+  });
+
+  return { ydoc, provider, ytext };
+}
+
+// Called when the user runs a cell (Ctrl+Enter, button click, etc.)
+async function onRunCell(documentPath, code, language) {
+  // Write a REQUESTED execution into the Yjs document.
+  // The monitor picks it up — the extension never touches the runtime.
+  const { execId } = await client.execute(documentPath, { code, language });
+
+  // Output appears in the Yjs document automatically.
+  // The ytext.observe() callback above will render it.
+}
+
+// Called when an AI agent wants to insert and run code
+async function onAgentAction(documentPath, code, language) {
+  // Same path as a human — write intent into the document
+  const { execId } = await client.execute(documentPath, { code, language });
+  // The agent sees the output via the same Yjs observer
+}
+```
+
+Key points:
+- **`client.open()`** is the single setup call — sync + monitor in one step.
+- **`client.execute()`** writes into Yjs, never calls a runtime directly.
+- **`ytext.observe()`** is how the head receives output — same mechanism for human edits, AI edits, and execution output.
+- An AI agent and a human can both call `execute()` on the same document and see each other's work.
 
 ---
 
